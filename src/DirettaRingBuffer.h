@@ -30,15 +30,30 @@ private:
     enum class S24PackMode { Unknown, LsbAligned, MsbAligned };
     S24PackMode m_s24PackMode = S24PackMode::Unknown;
 
+    // Round up to next power of 2 for fast bitmask modulo
+    static size_t roundUpPow2(size_t value) {
+        if (value < 2) return 2;
+        value--;
+        value |= value >> 1;
+        value |= value >> 2;
+        value |= value >> 4;
+        value |= value >> 8;
+        value |= value >> 16;
+        value |= value >> 32;
+        return value + 1;
+    }
+
 public:
     DirettaRingBuffer() = default;
 
     /**
      * @brief Resize buffer and set silence byte
+     * Buffer is rounded up to power-of-2 for fast bitmask modulo
      */
     void resize(size_t newSize, uint8_t silenceByte) {
-        buffer_.resize(newSize);
-        size_ = newSize;
+        size_ = roundUpPow2(newSize);
+        mask_ = size_ - 1;
+        buffer_.resize(size_);
         silenceByte_ = silenceByte;
         clear();
         fillWithSilence();
@@ -51,11 +66,11 @@ public:
     size_t getAvailable() const {
         size_t wp = writePos_.load(std::memory_order_acquire);
         size_t rp = readPos_.load(std::memory_order_acquire);
-        return (wp >= rp) ? (wp - rp) : (size_ - rp + wp);
+        return (wp - rp) & mask_;
     }
 
     size_t getFreeSpace() const {
-        return size_ - getAvailable() - 1;
+        return (mask_ - getAvailable());  // mask_ == size_ - 1
     }
 
     void clear() {
@@ -88,7 +103,7 @@ public:
             std::memcpy(buffer_.data(), data + firstChunk, len - firstChunk);
         }
 
-        writePos_.store((wp + len) % size_, std::memory_order_release);
+        writePos_.store((wp + len) & mask_, std::memory_order_release);
         return len;
     }
 
@@ -120,14 +135,14 @@ public:
 
         for (size_t i = 0; i < numSamples; i++) {
             const uint8_t* src = data + i * 4 + byteOffset;
-            size_t dstPos = (wp + i * 3) % size_;
+            size_t dstPos = (wp + i * 3) & mask_;
 
             buffer_[dstPos] = src[0];
-            buffer_[(dstPos + 1) % size_] = src[1];
-            buffer_[(dstPos + 2) % size_] = src[2];
+            buffer_[(dstPos + 1) & mask_] = src[1];
+            buffer_[(dstPos + 2) & mask_] = src[2];
         }
 
-        writePos_.store((wp + outSize) % size_, std::memory_order_release);
+        writePos_.store((wp + outSize) & mask_, std::memory_order_release);
         return numSamples * 4;  // Return input bytes consumed
     }
 
@@ -150,16 +165,16 @@ public:
 
         for (size_t i = 0; i < numSamples; i++) {
             const uint8_t* src = data + i * 2;
-            size_t dstPos = (wp + i * 4) % size_;
+            size_t dstPos = (wp + i * 4) & mask_;
 
             // Convert 16-bit to 32-bit: shift left by 16 bits (little-endian)
             buffer_[dstPos] = 0;
-            buffer_[(dstPos + 1) % size_] = 0;
-            buffer_[(dstPos + 2) % size_] = src[0];
-            buffer_[(dstPos + 3) % size_] = src[1];
+            buffer_[(dstPos + 1) & mask_] = 0;
+            buffer_[(dstPos + 2) & mask_] = src[0];
+            buffer_[(dstPos + 3) & mask_] = src[1];
         }
 
-        writePos_.store((wp + outSize) % size_, std::memory_order_release);
+        writePos_.store((wp + outSize) & mask_, std::memory_order_release);
         return inputSize;
     }
 
@@ -196,7 +211,7 @@ public:
             for (int c = 0; c < numChannels; c++) {
                 const uint8_t* channelData = data + c * bytesPerChannel;
                 size_t srcOffset = g * 4;
-                size_t dstPos = (wp + g * 4 * numChannels + c * 4) % size_;
+                size_t dstPos = (wp + g * 4 * numChannels + c * 4) & mask_;
 
                 uint8_t b0 = channelData[srcOffset];
                 uint8_t b1 = channelData[srcOffset + 1];
@@ -214,19 +229,19 @@ public:
                 // Write bytes - swap order for LITTLE endian targets
                 if (byteSwap) {
                     buffer_[dstPos] = b3;
-                    buffer_[(dstPos + 1) % size_] = b2;
-                    buffer_[(dstPos + 2) % size_] = b1;
-                    buffer_[(dstPos + 3) % size_] = b0;
+                    buffer_[(dstPos + 1) & mask_] = b2;
+                    buffer_[(dstPos + 2) & mask_] = b1;
+                    buffer_[(dstPos + 3) & mask_] = b0;
                 } else {
                     buffer_[dstPos] = b0;
-                    buffer_[(dstPos + 1) % size_] = b1;
-                    buffer_[(dstPos + 2) % size_] = b2;
-                    buffer_[(dstPos + 3) % size_] = b3;
+                    buffer_[(dstPos + 1) & mask_] = b1;
+                    buffer_[(dstPos + 2) & mask_] = b2;
+                    buffer_[(dstPos + 3) & mask_] = b3;
                 }
             }
         }
 
-        writePos_.store((wp + usableOutput) % size_, std::memory_order_release);
+        writePos_.store((wp + usableOutput) & mask_, std::memory_order_release);
         return completeGroups * 4 * numChannels;  // Return input bytes consumed
     }
 
@@ -250,7 +265,7 @@ public:
             std::memcpy(dest + firstChunk, buffer_.data(), len - firstChunk);
         }
 
-        readPos_.store((rp + len) % size_, std::memory_order_release);
+        readPos_.store((rp + len) & mask_, std::memory_order_release);
         return len;
     }
 
@@ -277,8 +292,12 @@ private:
 
     std::vector<uint8_t> buffer_;
     size_t size_ = 0;
-    std::atomic<size_t> writePos_{0};
-    std::atomic<size_t> readPos_{0};
+    size_t mask_ = 0;  // Power-of-2 bitmask for fast modulo (size_ - 1)
+
+    // Cache-line separated atomics to prevent false sharing between reader/writer threads
+    alignas(64) std::atomic<size_t> writePos_{0};
+    alignas(64) std::atomic<size_t> readPos_{0};
+
     uint8_t silenceByte_ = 0;
 };
 
