@@ -121,6 +121,7 @@ void DirettaSync::disable() {
     if (m_enabled) {
         shutdownWorker();
         DIRETTA::Sync::close();
+        m_sdkOpen = false;
         m_calculator.reset();
         m_enabled = false;
     }
@@ -151,6 +152,7 @@ bool DirettaSync::openSyncConnection() {
         return false;
     }
 
+    m_sdkOpen = true;
     inquirySupportFormat(m_targetAddress);
 
     if (g_verbose) {
@@ -340,6 +342,16 @@ bool DirettaSync::open(const AudioFormat& format) {
     if (!m_enabled) {
         std::cerr << "[DirettaSync] ERROR: Not enabled" << std::endl;
         return false;
+    }
+
+    // Reopen SDK if it was released (e.g., after playlist end)
+    if (!m_sdkOpen) {
+        std::cout << "[DirettaSync] SDK was released, reopening..." << std::endl;
+        if (!openSyncConnection()) {
+            std::cerr << "[DirettaSync] ERROR: Failed to reopen SDK" << std::endl;
+            return false;
+        }
+        std::cout << "[DirettaSync] SDK reopened successfully" << std::endl;
     }
 
     bool newIsDsd = format.isDSD;
@@ -606,6 +618,41 @@ void DirettaSync::close() {
     m_paused = false;
 
     DIRETTA_LOG("Close() done");
+}
+
+void DirettaSync::release() {
+    std::cout << "[DirettaSync] Release() - fully releasing target" << std::endl;
+
+    // First do a normal close if still open
+    if (m_open) {
+        close();
+    }
+
+    // Now fully close the SDK connection so target is released
+    if (m_sdkOpen) {
+        DIRETTA_LOG("Closing SDK connection...");
+
+        // Shutdown worker thread
+        m_running = false;
+        {
+            std::lock_guard<std::mutex> lock(m_workerMutex);
+            if (m_workerThread.joinable()) {
+                m_workerThread.join();
+            }
+        }
+
+        // Close SDK-level connection
+        DIRETTA::Sync::close();
+        m_sdkOpen = false;
+
+        // Brief delay to ensure target processes the disconnect
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        std::cout << "[DirettaSync] Target released" << std::endl;
+    }
+
+    // Clear format state so next open() starts fresh
+    m_hasPreviousFormat = false;
 }
 
 bool DirettaSync::reopenForFormatChange() {

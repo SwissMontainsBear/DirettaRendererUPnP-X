@@ -191,9 +191,18 @@ public:
     bool open(const AudioFormat& format);
 
     /**
-     * @brief Close connection
+     * @brief Close connection (keeps SDK ready for quick resume)
      */
     void close();
+
+    /**
+     * @brief Release target completely (closes SDK connection)
+     *
+     * Use this when playback has ended and we want to fully release
+     * the target so it can accept connections from other sources.
+     * The next open() will automatically reopen the SDK.
+     */
+    void release();
 
     bool isOpen() const { return m_open; }
     bool isOnline() { return is_online(); }
@@ -294,8 +303,9 @@ private:
     uint32_t m_effectiveMTU = 1500;
 
     // Connection state
-    std::atomic<bool> m_enabled{false};
-    std::atomic<bool> m_open{false};
+    std::atomic<bool> m_enabled{false};      // Target discovered, ready to use
+    std::atomic<bool> m_sdkOpen{false};      // SDK-level connection open
+    std::atomic<bool> m_open{false};         // Connected to target for playback
     std::atomic<bool> m_playing{false};
     std::atomic<bool> m_paused{false};
 

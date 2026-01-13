@@ -319,12 +319,11 @@ bool DirettaRenderer::start() {
         m_audioEngine->setTrackEndCallback([this]() {
             std::cout << "[DirettaRenderer] Track ended naturally" << std::endl;
 
-            // Close Diretta connection to release the target
-            // Without this, the target remains held after playlist ends
+            // Fully release the Diretta target on playlist end
+            // This closes the SDK connection so the target can accept other sources
+            // Using release() instead of close() ensures complete disconnection
             if (m_direttaSync) {
-                m_direttaSync->stopPlayback(true);
-                m_direttaSync->close();
-                std::cout << "[DirettaRenderer] Diretta connection closed" << std::endl;
+                m_direttaSync->release();
             }
 
             // Notify control point that track finished
@@ -444,16 +443,14 @@ bool DirettaRenderer::start() {
                 m_audioEngine->setCurrentURI(m_currentURI, m_currentMetadata, true);
             }
 
-            // Close Diretta connection on Stop (not Pause) for proper resource cleanup
+            // Fully release Diretta target on Stop for proper resource cleanup
             // This ensures:
             // - Clean handoff when switching to a different renderer
             // - Proper resource release on the Diretta target
             // - Control point gets expected clean disconnection
-            // Trade-off: subsequent Play will need to reconnect (~300ms)
+            // Trade-off: subsequent Play will need to reopen SDK (~300ms)
             if (m_direttaSync) {
-                m_direttaSync->stopPlayback(true);
-                m_direttaSync->close();
-                std::cout << "[DirettaRenderer] Diretta connection closed on Stop" << std::endl;
+                m_direttaSync->release();
             }
 
             m_upnp->notifyStateChange("STOPPED");
