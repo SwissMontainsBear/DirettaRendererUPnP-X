@@ -8,6 +8,10 @@
 
 set -e  # Exit on error
 
+# Save the original directory
+ORIGINAL_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -131,12 +135,12 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
     # Install FFmpeg build dependencies
     case $OS in
         fedora|rhel|centos)
-            sudo dnf install -y \
+            sudo dnf install -y --skip-unavailable \
                 gmp-devel \
                 gnutls-devel \
                 libdrm-devel \
                 fribidi-devel \
-                libsoxr-devel \
+                soxr-devel \
                 libvorbis-devel \
                 libxml2-devel
             ;;
@@ -163,7 +167,8 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
     esac
 
     # Download and build FFmpeg
-    FFMPEG_VERSION="5.1.2"
+    # Using 7.1 for better GCC 15 compatibility
+    FFMPEG_VERSION="7.1"
     FFMPEG_DIR="/tmp/ffmpeg-build"
 
     mkdir -p "$FFMPEG_DIR"
@@ -188,8 +193,6 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
         --enable-shared \
         --disable-stripping \
         --disable-autodetect \
-        --enable-lto \
-        --enable-small \
         --enable-gmp \
         --enable-gnutls \
         --enable-gpl \
@@ -213,14 +216,13 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
         --disable-devices \
         --disable-filters \
         --disable-doc \
-        --disable-inline-asm \
         --enable-muxer='flac,mov,ipod,wav,w64,ffmetadata' \
-        --enable-demuxer='flac,mov,wav,w64,ffmetadata,dsf,aac,hls,mpegts' \
+        --enable-demuxer='flac,mov,wav,w64,ffmetadata,dsf,dff,aac,hls,mpegts,mp3,ogg,pcm_*,lavfi' \
         --enable-encoder='alac,flac,pcm_*' \
-        --enable-decoder='alac,flac,pcm_*,dsd_*,vorbis,aac*' \
-        --enable-parser='aac,aac_latm,flac,vorbis' \
-        --enable-protocol='file,pipe,http,https,tcp' \
-        --enable-filter='aresample,hdcd' \
+        --enable-decoder='alac,flac,pcm_*,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,vorbis,aac,aac_fixed,aac_latm,mp3,mp3float' \
+        --enable-parser='aac,aac_latm,flac,vorbis,mpegaudio' \
+        --enable-protocol='file,pipe,http,https,tcp,hls' \
+        --enable-filter='aresample,hdcd,sine,anull' \
         --enable-version3
 
     print_info "Building FFmpeg (this may take a while)..."
@@ -255,8 +257,8 @@ EOF
     export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
     export PATH=/usr/local/bin:$PATH
 
-    # Return to original directory
-    cd - > /dev/null
+    # Return to script directory
+    cd "$SCRIPT_DIR"
 
     # Cleanup
     rm -rf "$FFMPEG_DIR"
@@ -264,6 +266,76 @@ EOF
     print_success "Optimized FFmpeg installed to /usr/local"
     print_info "This installation coexists with any system FFmpeg"
     print_info "Library path configured in /etc/ld.so.conf.d/ffmpeg-local.conf"
+
+    # Test FFmpeg installation
+    print_info "Testing FFmpeg installation..."
+
+    FFMPEG_BIN="/usr/local/bin/ffmpeg"
+    if [ -x "$FFMPEG_BIN" ]; then
+        # Check version
+        FFMPEG_VER=$("$FFMPEG_BIN" -version 2>&1 | head -1)
+        print_success "FFmpeg binary: $FFMPEG_VER"
+
+        # Check for required decoders
+        print_info "Checking audio decoders..."
+        DECODERS=$("$FFMPEG_BIN" -decoders 2>&1)
+
+        REQUIRED_DECODERS="flac alac dsd_lsbf dsd_msbf pcm_s16le pcm_s24le pcm_s32le"
+        ALL_FOUND=true
+
+        for dec in $REQUIRED_DECODERS; do
+            if echo "$DECODERS" | grep -q " $dec "; then
+                echo "  [OK] $dec"
+            else
+                echo "  [MISSING] $dec"
+                ALL_FOUND=false
+            fi
+        done
+
+        # Check for required demuxers
+        print_info "Checking demuxers..."
+        DEMUXERS=$("$FFMPEG_BIN" -demuxers 2>&1)
+
+        REQUIRED_DEMUXERS="flac wav dsf mov"
+        for dem in $REQUIRED_DEMUXERS; do
+            if echo "$DEMUXERS" | grep -q " $dem "; then
+                echo "  [OK] $dem"
+            else
+                echo "  [MISSING] $dem"
+                ALL_FOUND=false
+            fi
+        done
+
+        # Check for required protocols
+        print_info "Checking protocols..."
+        PROTOCOLS=$("$FFMPEG_BIN" -protocols 2>&1)
+
+        REQUIRED_PROTOCOLS="http https file"
+        for proto in $REQUIRED_PROTOCOLS; do
+            if echo "$PROTOCOLS" | grep -q "$proto"; then
+                echo "  [OK] $proto"
+            else
+                echo "  [MISSING] $proto"
+                ALL_FOUND=false
+            fi
+        done
+
+        if [ "$ALL_FOUND" = true ]; then
+            print_success "All required FFmpeg components found!"
+        else
+            print_warning "Some FFmpeg components are missing - audio playback may be limited"
+        fi
+
+        # Quick decode test with a generated tone
+        print_info "Testing decoder functionality..."
+        if "$FFMPEG_BIN" -f lavfi -i "sine=frequency=1000:duration=0.1" -f null - 2>/dev/null; then
+            print_success "FFmpeg decode test passed"
+        else
+            print_warning "FFmpeg decode test failed - there may be issues"
+        fi
+    else
+        print_error "FFmpeg binary not found at $FFMPEG_BIN"
+    fi
 else
     print_info "Installing FFmpeg from system packages..."
 
@@ -326,8 +398,12 @@ fi
 # Build the renderer
 print_info "Building Diretta UPnP Renderer..."
 
+# Ensure we're in the script directory
+cd "$SCRIPT_DIR"
+
 if [ ! -f "Makefile" ]; then
-    print_error "Makefile not found. Are you in the correct directory?"
+    print_error "Makefile not found in $SCRIPT_DIR"
+    print_info "Please run this script from the project directory"
     exit 1
 fi
 
