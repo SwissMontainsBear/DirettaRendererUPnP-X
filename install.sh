@@ -163,7 +163,7 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
     esac
 
     # Download and build FFmpeg
-    FFMPEG_VERSION="7.1"
+    FFMPEG_VERSION="5.1.2"
     FFMPEG_DIR="/tmp/ffmpeg-build"
 
     mkdir -p "$FFMPEG_DIR"
@@ -179,10 +179,11 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
     cd "ffmpeg-${FFMPEG_VERSION}"
 
     print_info "Configuring FFmpeg (optimized for audio)..."
+    print_info "Installing to /usr/local (coexists with system FFmpeg)"
     make distclean 2>/dev/null || true
 
     ./configure \
-        --prefix=/usr \
+        --prefix=/usr/local \
         --disable-debug \
         --enable-shared \
         --disable-stripping \
@@ -225,9 +226,34 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
     print_info "Building FFmpeg (this may take a while)..."
     make -j$(nproc)
 
-    print_info "Installing FFmpeg..."
+    print_info "Installing FFmpeg to /usr/local..."
     sudo make install
     sudo ldconfig
+
+    # Configure library path for /usr/local
+    print_info "Configuring library path..."
+
+    # Add to /etc/ld.so.conf.d/ for system-wide recognition
+    echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-local.conf > /dev/null
+    sudo ldconfig
+
+    # Also add to profile for runtime
+    PROFILE_LINE='export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH'
+    PKG_CONFIG_LINE='export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH'
+
+    # Add to /etc/profile.d/ for all users
+    sudo tee /etc/profile.d/ffmpeg-local.sh > /dev/null <<EOF
+# FFmpeg installed to /usr/local
+export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:\$PKG_CONFIG_PATH
+export PATH=/usr/local/bin:\$PATH
+EOF
+    sudo chmod +x /etc/profile.d/ffmpeg-local.sh
+
+    # Source it for current session
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+    export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+    export PATH=/usr/local/bin:$PATH
 
     # Return to original directory
     cd - > /dev/null
@@ -235,7 +261,9 @@ if [ "$FFMPEG_OPTION" = "1" ]; then
     # Cleanup
     rm -rf "$FFMPEG_DIR"
 
-    print_success "Optimized FFmpeg installed successfully"
+    print_success "Optimized FFmpeg installed to /usr/local"
+    print_info "This installation coexists with any system FFmpeg"
+    print_info "Library path configured in /etc/ld.so.conf.d/ffmpeg-local.conf"
 else
     print_info "Installing FFmpeg from system packages..."
 
