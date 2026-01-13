@@ -424,6 +424,7 @@ When modifying this codebase:
 ## Credits
 
 - Original DirettaRendererUPnP by Dominique COMET (cometdom)
-- MPD Diretta Output Plugin v0.4.0 for `DIRETTA::Sync` API patterns
+- MPD Diretta Output Plugin v0.4.0 for `DIRETTA::Sync` API patterns (swissmountainsbear)
+- leeeanh for their brilliant optimisation strategies
 - Diretta Host SDK by Yu Harada
 - Claude Code for refactoring assistance
