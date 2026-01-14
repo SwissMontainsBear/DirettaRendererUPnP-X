@@ -81,10 +81,10 @@ namespace DirettaBuffer {
     constexpr size_t PCM_PREFILL_MS = 30;       // Was 50 - faster start
     constexpr size_t PCM_LOWRATE_PREFILL_MS = 100;
 
-    constexpr unsigned int DAC_STABILIZATION_MS = 100;
+    constexpr unsigned int DAC_STABILIZATION_MS = 300;
     constexpr unsigned int ONLINE_WAIT_MS = 2000;
     constexpr unsigned int FORMAT_SWITCH_DELAY_MS = 800;
-    constexpr unsigned int POST_ONLINE_SILENCE_BUFFERS = 300;
+    constexpr unsigned int POST_ONLINE_SILENCE_BUFFERS = 100;
 
     // UPnP push model needs larger buffers than MPD's pull model
     // 64KB = ~370ms floor at 44.1kHz/16-bit, negligible at higher rates
