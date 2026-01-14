@@ -401,14 +401,31 @@ bool DirettaSync::open(const AudioFormat& format) {
         } else {
             // Format change detected
             bool wasDSD = m_previousFormat.isDSD;
+            bool nowDSD = format.isDSD;
             bool nowPCM = !format.isDSD;
 
-            if (wasDSD && nowPCM) {
-                // DSD→PCM: Full close/reopen for clean I2S transition
-                // I2S targets are more timing-sensitive than USB and need a cleaner break
+            // Detect DSD rate change (especially downward transitions like DSD512→DSD64)
+            bool isDsdRateChange = wasDSD && nowDSD &&
+                                   (m_previousFormat.sampleRate != format.sampleRate);
+            bool isDsdDowngrade = isDsdRateChange &&
+                                  (m_previousFormat.sampleRate > format.sampleRate);
+
+            if (wasDSD && (nowPCM || isDsdDowngrade)) {
+                // DSD→PCM or DSD high→low rate: Full close/reopen for clean transition
+                // I2S targets are timing-sensitive and need a clean break
+                // DSD rate downgrades (e.g., DSD512→DSD64) cause noise if the target's
+                // internal buffers aren't fully flushed - old high-rate data gets
+                // misinterpreted as low-rate data
                 // Note: We can't send silence here because playback is already stopped
                 // (auto-stop happens before URI change), so getNewStream() isn't being called
-                std::cout << "[DirettaSync] DSD->PCM transition - full close/reopen for I2S compatibility" << std::endl;
+                if (nowPCM) {
+                    std::cout << "[DirettaSync] DSD->PCM transition - full close/reopen" << std::endl;
+                } else {
+                    int prevMultiplier = m_previousFormat.sampleRate / 2822400;
+                    int newMultiplier = format.sampleRate / 2822400;
+                    std::cout << "[DirettaSync] DSD" << (prevMultiplier * 64) << "->DSD"
+                              << (newMultiplier * 64) << " downgrade - full close/reopen" << std::endl;
+                }
 
                 int dsdMultiplier = m_previousFormat.sampleRate / 44100;
                 std::cout << "[DirettaSync] Previous format was DSD" << dsdMultiplier << std::endl;
@@ -420,7 +437,7 @@ bool DirettaSync::open(const AudioFormat& format) {
                 stop();
                 disconnect(true);
 
-                // Close DIRETTA::Sync completely (critical for DSD→PCM reset)
+                // Close DIRETTA::Sync completely (critical for buffer flush)
                 DIRETTA::Sync::close();
 
                 // Shutdown worker thread
@@ -436,25 +453,29 @@ bool DirettaSync::open(const AudioFormat& format) {
                 m_playing = false;
                 m_paused = false;
 
-                // Extended delay for I2S target to fully reset from DSD mode
-                // This is critical - the target needs time to switch from DSD clock to PCM clock
-                std::cout << "[DirettaSync] Waiting 800ms for I2S target to reset from DSD mode..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                // Extended delay for target to fully reset
+                // DSD→PCM needs full 800ms for clock domain switch
+                // DSD rate downgrade needs 400ms to flush internal buffers
+                int resetDelayMs = nowPCM ? 800 : 400;
+                std::cout << "[DirettaSync] Waiting " << resetDelayMs
+                          << "ms for target to reset..." << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(resetDelayMs));
 
-                // Reopen DIRETTA::Sync fresh for PCM
+                // Reopen DIRETTA::Sync fresh
                 ACQUA::Clock cycleTime = ACQUA::Clock::MicroSeconds(m_config.cycleTime);
                 if (!DIRETTA::Sync::open(
                         DIRETTA::Sync::THRED_MODE(m_config.threadMode),
                         cycleTime, 0, "DirettaRenderer", 0x44525400,
                         -1, -1, 0, DIRETTA::Sync::MSMODE_MS3)) {
-                    std::cerr << "[DirettaSync] Failed to re-open DIRETTA::Sync after DSD->PCM" << std::endl;
+                    std::cerr << "[DirettaSync] Failed to re-open DIRETTA::Sync" << std::endl;
                     return false;
                 }
-                std::cout << "[DirettaSync] DIRETTA::Sync reopened for PCM" << std::endl;
+                std::cout << "[DirettaSync] DIRETTA::Sync reopened" << std::endl;
 
                 // Fall through to full open path (needFullConnect is already true)
             } else {
-                // Other format changes: use existing reopenForFormatChange()
+                // Other format changes (PCM→DSD, DSD upgrade, PCM rate change):
+                // use existing reopenForFormatChange()
                 std::cout << "[DirettaSync] Format change - reopen" << std::endl;
                 if (!reopenForFormatChange()) {
                     std::cerr << "[DirettaSync] Failed to reopen for format change" << std::endl;
@@ -1178,12 +1199,24 @@ bool DirettaSync::getNewStream(DIRETTA::Stream& stream) {
     }
 
     // Post-online stabilization
+    // Scale stabilization buffers for higher DSD rates to allow CPU/cache warmup
+    // DSD512 needs more warmup cycles than DSD64 due to 8x data throughput
     if (!m_postOnlineDelayDone.load(std::memory_order_acquire)) {
+        int stabilizationTarget = static_cast<int>(DirettaBuffer::POST_ONLINE_SILENCE_BUFFERS);
+        if (currentIsDsd) {
+            // Scale by DSD multiplier: DSD64=1x, DSD128=2x, DSD256=4x, DSD512=8x
+            int currentSampleRate = m_sampleRate.load(std::memory_order_acquire);
+            int dsdMultiplier = currentSampleRate / 2822400;  // DSD64 baseline
+            if (dsdMultiplier > 1) {
+                stabilizationTarget *= dsdMultiplier;
+            }
+        }
+
         int count = m_stabilizationCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (count >= static_cast<int>(DirettaBuffer::POST_ONLINE_SILENCE_BUFFERS)) {
+        if (count >= stabilizationTarget) {
             m_postOnlineDelayDone = true;
             m_stabilizationCount = 0;
-            DIRETTA_LOG("Post-online stabilization complete");
+            DIRETTA_LOG("Post-online stabilization complete (" << count << " buffers)");
         }
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
         m_workerActive = false;

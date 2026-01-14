@@ -34,6 +34,34 @@
 | Heap allocations per DSD read | 2 (std::vector) | 0 (steady state) |
 | Memory pattern | Alloc/free every call | Pre-allocated, reused |
 
+### 3. DSD512 Startup Fix for Zen3 CPUs
+
+- Scaled post-online stabilization buffers based on DSD rate
+- Higher DSD rates now get proportionally more warmup cycles
+- Fixes harsh sound at DSD512 startup on AMD Zen3 systems (works fine on Zen4)
+- Root cause: Zen3's slower memory controller and different cache hierarchy need more warmup time at high data throughput
+
+| DSD Rate | Stabilization Buffers | Warmup Time |
+|----------|----------------------|-------------|
+| DSD64    | 50 (unchanged)       | ~50ms       |
+| DSD128   | 100 (2x)             | ~100ms      |
+| DSD256   | 200 (4x)             | ~200ms      |
+| DSD512   | 400 (8x)             | ~400ms      |
+
+- **Files:** `src/DirettaSync.cpp` (lines 1180-1203)
+
+### 4. DSD Rate Downgrade Transition Noise Fix
+
+- DSD rate downgrades (e.g., DSD512→DSD64) now use full close/reopen
+- Previously used `reopenForFormatChange()` which tries to send silence buffers
+- Problem: When user selects new track, playback stops before transition, so `getNewStream()` isn't called and silence buffers never get sent to target
+- Target's internal buffers still contain high-rate DSD data → misinterpreted as low-rate → noise
+- Solution: Same aggressive approach as DSD→PCM (full `DIRETTA::Sync::close()` + delay + fresh `open()`)
+- DSD→PCM: 800ms delay (clock domain switch)
+- DSD downgrade: 400ms delay (buffer flush)
+- DSD upgrade and other transitions: unchanged (use `reopenForFormatChange()`)
+- **Files:** `src/DirettaSync.cpp` (lines 401-486)
+
 ---
 
 ## 2026-01-13
