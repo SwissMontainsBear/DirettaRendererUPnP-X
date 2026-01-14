@@ -77,7 +77,7 @@ namespace DirettaBuffer {
     constexpr float DSD_BUFFER_SECONDS = 0.8f;
     constexpr float PCM_BUFFER_SECONDS = 0.3f;  // Was 1.0f - low latency
 
-    constexpr size_t DSD_PREFILL_MS = 200;
+    constexpr size_t DSD_PREFILL_MS = 500;
     constexpr size_t PCM_PREFILL_MS = 30;       // Was 50 - faster start
     constexpr size_t PCM_LOWRATE_PREFILL_MS = 100;
 
