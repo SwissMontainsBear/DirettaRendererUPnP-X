@@ -67,17 +67,23 @@ buffersNeeded = targetWarmupMs × 1000 / cycleTimeUs
 
 - **Files:** `src/DirettaSync.cpp` (lines 1201-1239)
 
-### 4. DSD Rate Downgrade Transition Noise Fix
+### 4. DSD Rate Change Transition Noise Fix
 
-- DSD rate downgrades (e.g., DSD512→DSD64) now use full close/reopen
+- **All DSD rate changes** now use full close/reopen (not just downgrades)
+- Includes clock domain changes: DSD512×44.1kHz ↔ DSD512×48kHz
 - Previously used `reopenForFormatChange()` which tries to send silence buffers
 - Problem: When user selects new track, playback stops before transition, so `getNewStream()` isn't called and silence buffers never get sent to target
-- Target's internal buffers still contain high-rate DSD data → misinterpreted as low-rate → noise
+- Target's internal buffers still contain old DSD data → causes noise on new format
 - Solution: Same aggressive approach as DSD→PCM (full `DIRETTA::Sync::close()` + delay + fresh `open()`)
-- DSD→PCM: 800ms delay (clock domain switch)
-- DSD downgrade: 400ms delay (buffer flush)
-- DSD upgrade and other transitions: unchanged (use `reopenForFormatChange()`)
-- **Files:** `src/DirettaSync.cpp` (lines 401-486)
+
+| Transition | Action | Delay |
+|------------|--------|-------|
+| DSD→PCM | Full close/reopen | 800ms |
+| DSD→DSD (any rate change) | Full close/reopen | 400ms |
+| PCM→DSD | reopenForFormatChange() | 800ms |
+| PCM→PCM (rate change) | reopenForFormatChange() | 800ms |
+
+- **Files:** `src/DirettaSync.cpp` (lines 401-482)
 
 ---
 

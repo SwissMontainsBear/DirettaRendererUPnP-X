@@ -404,18 +404,16 @@ bool DirettaSync::open(const AudioFormat& format) {
             bool nowDSD = format.isDSD;
             bool nowPCM = !format.isDSD;
 
-            // Detect DSD rate change (especially downward transitions like DSD512→DSD64)
+            // Detect DSD rate change (any rate change, including clock domain switches)
+            // DSD512×44.1 (22,579,200 Hz) ↔ DSD512×48 (24,576,000 Hz) requires clock domain change
             bool isDsdRateChange = wasDSD && nowDSD &&
                                    (m_previousFormat.sampleRate != format.sampleRate);
-            bool isDsdDowngrade = isDsdRateChange &&
-                                  (m_previousFormat.sampleRate > format.sampleRate);
 
-            if (wasDSD && (nowPCM || isDsdDowngrade)) {
-                // DSD→PCM or DSD high→low rate: Full close/reopen for clean transition
+            if (wasDSD && (nowPCM || isDsdRateChange)) {
+                // DSD→PCM or any DSD rate change: Full close/reopen for clean transition
                 // I2S targets are timing-sensitive and need a clean break
-                // DSD rate downgrades (e.g., DSD512→DSD64) cause noise if the target's
-                // internal buffers aren't fully flushed - old high-rate data gets
-                // misinterpreted as low-rate data
+                // Rate changes cause noise if target's internal buffers aren't fully flushed
+                // Clock domain changes (44.1kHz ↔ 48kHz family) also require full reset
                 // Note: We can't send silence here because playback is already stopped
                 // (auto-stop happens before URI change), so getNewStream() isn't being called
                 if (nowPCM) {
@@ -424,7 +422,7 @@ bool DirettaSync::open(const AudioFormat& format) {
                     int prevMultiplier = m_previousFormat.sampleRate / 2822400;
                     int newMultiplier = format.sampleRate / 2822400;
                     std::cout << "[DirettaSync] DSD" << (prevMultiplier * 64) << "->DSD"
-                              << (newMultiplier * 64) << " downgrade - full close/reopen" << std::endl;
+                              << (newMultiplier * 64) << " rate change - full close/reopen" << std::endl;
                 }
 
                 int dsdMultiplier = m_previousFormat.sampleRate / 44100;
@@ -474,7 +472,7 @@ bool DirettaSync::open(const AudioFormat& format) {
 
                 // Fall through to full open path (needFullConnect is already true)
             } else {
-                // Other format changes (PCM→DSD, DSD upgrade, PCM rate change):
+                // Other format changes (PCM→DSD, PCM rate change):
                 // use existing reopenForFormatChange()
                 std::cout << "[DirettaSync] Format change - reopen" << std::endl;
                 if (!reopenForFormatChange()) {
