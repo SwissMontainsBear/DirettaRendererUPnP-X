@@ -79,7 +79,7 @@ namespace DirettaBuffer {
 
     constexpr size_t DSD_PREFILL_MS = 200;
     constexpr size_t PCM_PREFILL_MS = 50;
-    constexpr size_t PCM_LOWRATE_PREFILL_MS = 100;
+    constexpr size_t PCM_LOWRATE_PREFILL_MS = 50;
 
     constexpr unsigned int DAC_STABILIZATION_MS = 100;
     constexpr unsigned int ONLINE_WAIT_MS = 2000;
