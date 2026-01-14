@@ -531,6 +531,7 @@ void AudioDecoder::close() {
     m_eof = false;
     m_rawDSD = false;
     m_resampleBufferCapacity = 0;  // Reset capacity tracking
+    m_dsdBufferCapacity = 0;       // Reset DSD buffer capacity tracking
 }
 
 size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
@@ -549,11 +550,18 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
         size_t totalBytesNeeded = (numSamples * m_trackInfo.channels) / 8;
         size_t bytesPerChannelNeeded = totalBytesNeeded / m_trackInfo.channels;
 
-        // Vectors to collect L and R data
-        std::vector<uint8_t> leftData;
-        std::vector<uint8_t> rightData;
-        leftData.reserve(bytesPerChannelNeeded);
-        rightData.reserve(bytesPerChannelNeeded);
+        // Ensure pre-allocated DSD buffers are large enough (resize only if capacity insufficient)
+        if (m_dsdBufferCapacity < bytesPerChannelNeeded) {
+            m_dsdLeftBuffer.resize(bytesPerChannelNeeded);
+            m_dsdRightBuffer.resize(bytesPerChannelNeeded);
+            m_dsdBufferCapacity = bytesPerChannelNeeded;
+        }
+
+        // Use offset tracking instead of vector operations (zero allocations)
+        size_t leftOffset = 0;
+        size_t rightOffset = 0;
+        uint8_t* leftData = m_dsdLeftBuffer.data();
+        uint8_t* rightData = m_dsdRightBuffer.data();
 
         // Ensure output buffer is large enough
         if (buffer.size() < totalBytesNeeded) {
@@ -565,12 +573,10 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
             size_t remainingPerCh = m_remainingCount / 2;
             size_t toUse = std::min(remainingPerCh, bytesPerChannelNeeded);
 
-            leftData.insert(leftData.end(),
-                           m_remainingSamples.data(),
-                           m_remainingSamples.data() + toUse);
-            rightData.insert(rightData.end(),
-                            m_remainingSamples.data() + remainingPerCh,
-                            m_remainingSamples.data() + remainingPerCh + toUse);
+            memcpy(leftData + leftOffset, m_remainingSamples.data(), toUse);
+            leftOffset += toUse;
+            memcpy(rightData + rightOffset, m_remainingSamples.data() + remainingPerCh, toUse);
+            rightOffset += toUse;
 
             if (toUse < remainingPerCh) {
                 size_t leftover = remainingPerCh - toUse;
@@ -588,7 +594,7 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
 
         // Read packets until we have enough data
         // DSF layout: each packet is [blockSize L][blockSize R]
-        while (leftData.size() < bytesPerChannelNeeded && !m_eof) {
+        while (leftOffset < bytesPerChannelNeeded && !m_eof) {
             int ret = av_read_frame(m_formatContext, m_packet);
             if (ret < 0) {
                 if (ret == AVERROR_EOF) {
@@ -610,11 +616,13 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
             const uint8_t* pktL = m_packet->data;
             const uint8_t* pktR = m_packet->data + blockSize;
 
-            size_t stillNeed = bytesPerChannelNeeded - leftData.size();
+            size_t stillNeed = bytesPerChannelNeeded - leftOffset;
             size_t toTake = std::min(blockSize, stillNeed);
 
-            leftData.insert(leftData.end(), pktL, pktL + toTake);
-            rightData.insert(rightData.end(), pktR, pktR + toTake);
+            memcpy(leftData + leftOffset, pktL, toTake);
+            leftOffset += toTake;
+            memcpy(rightData + rightOffset, pktR, toTake);
+            rightOffset += toTake;
 
             // Debug first few packets
             if (m_packetCount <= 3) {
@@ -645,12 +653,12 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
         }
 
         // Build output: [all L][all R]
-        size_t actualPerCh = std::min(leftData.size(), rightData.size());
+        size_t actualPerCh = std::min(leftOffset, rightOffset);
         size_t totalBytes = actualPerCh * 2;
 
         if (actualPerCh > 0) {
-            memcpy_audio(buffer.data(), leftData.data(), actualPerCh);
-            memcpy_audio(buffer.data() + actualPerCh, rightData.data(), actualPerCh);
+            memcpy_audio(buffer.data(), leftData, actualPerCh);
+            memcpy_audio(buffer.data() + actualPerCh, rightData, actualPerCh);
         }
 
         // Debug output

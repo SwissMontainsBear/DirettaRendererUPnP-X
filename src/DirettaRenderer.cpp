@@ -565,8 +565,14 @@ void DirettaRenderer::audioThreadFunc() {
             }
 
             // Adjust samples per call based on format
-            // PCM: 2048 samples = ~46ms at 44.1kHz (was 8192 = ~186ms)
-            size_t samplesPerCall = isDSD ? 32768 : 2048;
+            // PCM: 2048 samples = ~46ms at 44.1kHz
+            // DSD: Rate-adaptive for consistent ~12ms chunks
+            size_t samplesPerCall;
+            if (isDSD) {
+                samplesPerCall = DirettaBuffer::calculateDsdSamplesPerCall(sampleRate);
+            } else {
+                samplesPerCall = 2048;
+            }
 
             if (sampleRate != lastSampleRate || samplesPerCall != currentSamplesPerCall) {
                 currentSamplesPerCall = samplesPerCall;

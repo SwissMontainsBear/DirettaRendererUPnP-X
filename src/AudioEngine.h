@@ -138,6 +138,11 @@ private:
     AudioBuffer m_resampleBuffer;
     size_t m_resampleBufferCapacity = 0;
 
+    // Pre-allocated DSD channel buffers (eliminates per-call std::vector allocation)
+    AudioBuffer m_dsdLeftBuffer;
+    AudioBuffer m_dsdRightBuffer;
+    size_t m_dsdBufferCapacity = 0;
+
     // Debug/diagnostic counters (instance variables, NOT static!)
     // These were previously static variables causing race conditions when
     // multiple AudioDecoder instances run concurrently (e.g., gapless preload)

@@ -105,6 +105,31 @@ namespace DirettaBuffer {
         size_t result = (bytesPerSecond * prefillMs) / 1000;
         return std::max(result, MIN_PREFILL_BYTES);
     }
+
+    // Calculate DSD samples per call based on rate
+    // Target: ~10-12ms chunks for consistent scheduling granularity
+    // Returns DSD samples (1-bit), which convert to bytes via: bytes = samples * channels / 8
+    inline size_t calculateDsdSamplesPerCall(uint32_t dsdSampleRate) {
+        // Target chunk duration in milliseconds
+        constexpr double TARGET_CHUNK_MS = 12.0;
+
+        // Limits
+        constexpr size_t MIN_DSD_SAMPLES = 8192;   // ~3ms at DSD64
+        constexpr size_t MAX_DSD_SAMPLES = 131072; // ~46ms at DSD64, ~3ms at DSD1024
+
+        // Calculate samples for target duration
+        // DSD sample rate is the 1-bit rate (e.g., 2822400 for DSD64)
+        size_t samplesPerCall = static_cast<size_t>(dsdSampleRate * TARGET_CHUNK_MS / 1000.0);
+
+        // Round to multiple of 256 for alignment (32 bytes per channel minimum)
+        samplesPerCall = ((samplesPerCall + 255) / 256) * 256;
+
+        // Clamp to reasonable range (match existing std::max/std::min pattern)
+        samplesPerCall = std::max(samplesPerCall, MIN_DSD_SAMPLES);
+        samplesPerCall = std::min(samplesPerCall, MAX_DSD_SAMPLES);
+
+        return samplesPerCall;
+    }
 }
 
 //=============================================================================
