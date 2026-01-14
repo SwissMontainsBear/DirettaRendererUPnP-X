@@ -1,0 +1,578 @@
+#!/bin/bash
+#
+# Diretta UPnP Renderer - Installation Script
+# 
+# This script helps install dependencies and set up the renderer.
+# Run with: bash install.sh
+#
+
+set -e  # Exit on error
+
+# Save the original directory
+ORIGINAL_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Print colored messages
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Check if running as root
+if [ "$EUID" -eq 0 ]; then 
+    print_error "Please do not run this script as root"
+    print_info "The script will ask for sudo password when needed"
+    exit 1
+fi
+
+echo "============================================"
+echo " Diretta UPnP Renderer - Installation"
+echo "============================================"
+echo ""
+
+# Detect Linux distribution
+print_info "Detecting Linux distribution..."
+
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    VER=$VERSION_ID
+    print_success "Detected: $PRETTY_NAME"
+else
+    print_error "Cannot detect Linux distribution"
+    exit 1
+fi
+
+# Install base dependencies based on distribution
+print_info "Installing base dependencies..."
+
+case $OS in
+    fedora|rhel|centos)
+        print_info "Using DNF package manager..."
+        sudo dnf install -y \
+            gcc-c++ \
+            make \
+            git \
+            libupnp-devel \
+            wget \
+            nasm \
+            yasm
+        ;;
+
+    ubuntu|debian)
+        print_info "Using APT package manager..."
+        sudo apt update
+        sudo apt install -y \
+            build-essential \
+            git \
+            libupnp-dev \
+            wget \
+            nasm \
+            yasm
+        ;;
+
+    arch|manjaro)
+        print_info "Using Pacman package manager..."
+        sudo pacman -Sy --needed --noconfirm \
+            base-devel \
+            git \
+            libupnp \
+            wget \
+            nasm \
+            yasm
+        ;;
+
+    *)
+        print_error "Unsupported distribution: $OS"
+        print_info "Please install dependencies manually:"
+        print_info "  - gcc/g++ (C++ compiler)"
+        print_info "  - make"
+        print_info "  - libupnp development library"
+        exit 1
+        ;;
+esac
+
+print_success "Base dependencies installed"
+
+# FFmpeg installation
+echo ""
+print_info "FFmpeg is required for audio decoding."
+echo ""
+echo "FFmpeg installation options:"
+echo "  1) Build optimized FFmpeg from source (recommended for audio quality)"
+echo "     - Minimal build with only audio codecs needed"
+echo "     - Includes DSD, FLAC, ALAC, AAC, Vorbis decoders"
+echo "     - Takes 5-15 minutes to compile"
+echo ""
+echo "  2) Use system FFmpeg packages (faster installation)"
+echo "     - Uses distribution packages"
+echo "     - May lack some audio codecs (DSD support varies)"
+echo ""
+read -p "Choose option [1/2] (default: 1): " FFMPEG_OPTION
+FFMPEG_OPTION=${FFMPEG_OPTION:-1}
+
+if [ "$FFMPEG_OPTION" = "1" ]; then
+    print_info "Building optimized FFmpeg from source..."
+
+    # Install FFmpeg build dependencies
+    case $OS in
+        fedora|rhel|centos)
+            sudo dnf install -y --skip-unavailable \
+                gmp-devel \
+                gnutls-devel \
+                libdrm-devel \
+                fribidi-devel \
+                soxr-devel \
+                libvorbis-devel \
+                libxml2-devel
+            ;;
+        ubuntu|debian)
+            sudo apt install -y \
+                libgmp-dev \
+                libgnutls28-dev \
+                libdrm-dev \
+                libfribidi-dev \
+                libsoxr-dev \
+                libvorbis-dev \
+                libxml2-dev
+            ;;
+        arch|manjaro)
+            sudo pacman -Sy --needed --noconfirm \
+                gmp \
+                gnutls \
+                libdrm \
+                fribidi \
+                libsoxr \
+                libvorbis \
+                libxml2
+            ;;
+    esac
+
+    # Download and build FFmpeg
+    # Using 7.1 for better GCC 15 compatibility
+    FFMPEG_VERSION="7.1"
+    FFMPEG_DIR="/tmp/ffmpeg-build"
+
+    mkdir -p "$FFMPEG_DIR"
+    cd "$FFMPEG_DIR"
+
+    if [ ! -f "ffmpeg-${FFMPEG_VERSION}.tar.xz" ]; then
+        print_info "Downloading FFmpeg ${FFMPEG_VERSION}..."
+        wget -q --show-progress "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+    fi
+
+    print_info "Extracting FFmpeg..."
+    tar xf "ffmpeg-${FFMPEG_VERSION}.tar.xz"
+    cd "ffmpeg-${FFMPEG_VERSION}"
+
+    print_info "Configuring FFmpeg (optimized for audio)..."
+    print_info "Installing to /usr/local (coexists with system FFmpeg)"
+    make distclean 2>/dev/null || true
+
+    ./configure \
+        --prefix=/usr/local \
+        --disable-debug \
+        --enable-shared \
+        --disable-stripping \
+        --disable-autodetect \
+        --enable-gmp \
+        --enable-gnutls \
+        --enable-gpl \
+        --enable-libdrm \
+        --enable-libfribidi \
+        --enable-libsoxr \
+        --enable-libvorbis \
+        --enable-libxml2 \
+        --enable-postproc \
+        --enable-swresample \
+        --disable-encoders \
+        --disable-decoders \
+        --disable-hwaccels \
+        --disable-muxers \
+        --disable-demuxers \
+        --disable-parsers \
+        --disable-bsfs \
+        --disable-protocols \
+        --disable-indevs \
+        --disable-outdevs \
+        --disable-devices \
+        --disable-filters \
+        --disable-doc \
+        --enable-muxer='flac,mov,ipod,wav,w64,ffmetadata' \
+        --enable-demuxer='flac,mov,wav,w64,ffmetadata,dsf,dff,aac,hls,mpegts,mp3,ogg,pcm_*,lavfi' \
+        --enable-encoder='alac,flac,pcm_*' \
+        --enable-decoder='alac,flac,pcm_*,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,vorbis,aac,aac_fixed,aac_latm,mp3,mp3float' \
+        --enable-parser='aac,aac_latm,flac,vorbis,mpegaudio' \
+        --enable-protocol='file,pipe,http,https,tcp,hls' \
+        --enable-filter='aresample,hdcd,sine,anull' \
+        --enable-version3
+
+    print_info "Building FFmpeg (this may take a while)..."
+    make -j$(nproc)
+
+    print_info "Installing FFmpeg to /usr/local..."
+    sudo make install
+    sudo ldconfig
+
+    # Configure library path for /usr/local
+    print_info "Configuring library path..."
+
+    # Add to /etc/ld.so.conf.d/ for system-wide recognition
+    echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-local.conf > /dev/null
+    sudo ldconfig
+
+    # Also add to profile for runtime
+    PROFILE_LINE='export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH'
+    PKG_CONFIG_LINE='export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH'
+
+    # Add to /etc/profile.d/ for all users
+    sudo tee /etc/profile.d/ffmpeg-local.sh > /dev/null <<EOF
+# FFmpeg installed to /usr/local
+export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:\$PKG_CONFIG_PATH
+export PATH=/usr/local/bin:\$PATH
+EOF
+    sudo chmod +x /etc/profile.d/ffmpeg-local.sh
+
+    # Source it for current session
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+    export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+    export PATH=/usr/local/bin:$PATH
+
+    # Return to script directory
+    cd "$SCRIPT_DIR"
+
+    # Cleanup
+    rm -rf "$FFMPEG_DIR"
+
+    print_success "Optimized FFmpeg installed to /usr/local"
+    print_info "This installation coexists with any system FFmpeg"
+    print_info "Library path configured in /etc/ld.so.conf.d/ffmpeg-local.conf"
+
+    # Test FFmpeg installation
+    print_info "Testing FFmpeg installation..."
+
+    FFMPEG_BIN="/usr/local/bin/ffmpeg"
+    if [ -x "$FFMPEG_BIN" ]; then
+        # Check version
+        FFMPEG_VER=$("$FFMPEG_BIN" -version 2>&1 | head -1)
+        print_success "FFmpeg binary: $FFMPEG_VER"
+
+        # Check for required decoders
+        print_info "Checking audio decoders..."
+        DECODERS=$("$FFMPEG_BIN" -decoders 2>&1)
+
+        REQUIRED_DECODERS="flac alac dsd_lsbf dsd_msbf pcm_s16le pcm_s24le pcm_s32le"
+        ALL_FOUND=true
+
+        for dec in $REQUIRED_DECODERS; do
+            if echo "$DECODERS" | grep -q " $dec "; then
+                echo "  [OK] $dec"
+            else
+                echo "  [MISSING] $dec"
+                ALL_FOUND=false
+            fi
+        done
+
+        # Check for required demuxers
+        print_info "Checking demuxers..."
+        DEMUXERS=$("$FFMPEG_BIN" -demuxers 2>&1)
+
+        REQUIRED_DEMUXERS="flac wav dsf mov"
+        for dem in $REQUIRED_DEMUXERS; do
+            if echo "$DEMUXERS" | grep -q " $dem "; then
+                echo "  [OK] $dem"
+            else
+                echo "  [MISSING] $dem"
+                ALL_FOUND=false
+            fi
+        done
+
+        # Check for required protocols
+        print_info "Checking protocols..."
+        PROTOCOLS=$("$FFMPEG_BIN" -protocols 2>&1)
+
+        REQUIRED_PROTOCOLS="http https file"
+        for proto in $REQUIRED_PROTOCOLS; do
+            if echo "$PROTOCOLS" | grep -q "$proto"; then
+                echo "  [OK] $proto"
+            else
+                echo "  [MISSING] $proto"
+                ALL_FOUND=false
+            fi
+        done
+
+        if [ "$ALL_FOUND" = true ]; then
+            print_success "All required FFmpeg components found!"
+        else
+            print_warning "Some FFmpeg components are missing - audio playback may be limited"
+        fi
+
+        # Quick decode test with a generated tone
+        print_info "Testing decoder functionality..."
+        if "$FFMPEG_BIN" -f lavfi -i "sine=frequency=1000:duration=0.1" -f null - 2>/dev/null; then
+            print_success "FFmpeg decode test passed"
+        else
+            print_warning "FFmpeg decode test failed - there may be issues"
+        fi
+    else
+        print_error "FFmpeg binary not found at $FFMPEG_BIN"
+    fi
+else
+    print_info "Installing FFmpeg from system packages..."
+
+    case $OS in
+        fedora|rhel|centos)
+            sudo dnf install -y ffmpeg-devel
+            ;;
+        ubuntu|debian)
+            sudo apt install -y \
+                libavformat-dev \
+                libavcodec-dev \
+                libavutil-dev \
+                libswresample-dev
+            ;;
+        arch|manjaro)
+            sudo pacman -Sy --needed --noconfirm ffmpeg
+            ;;
+    esac
+
+    print_success "System FFmpeg installed"
+    print_warning "Note: System FFmpeg may lack some audio codecs (e.g., DSD)"
+fi
+
+print_success "All dependencies installed"
+
+# Check for Diretta SDK
+print_info "Checking for Diretta Host SDK..."
+
+SDK_PATH="$HOME/DirettaHostSDK_147"
+
+if [ -d "$SDK_PATH" ]; then
+    print_success "Found Diretta SDK at: $SDK_PATH"
+else
+    print_warning "Diretta SDK not found at: $SDK_PATH"
+    echo ""
+    echo "The Diretta Host SDK is required but not included in this repository."
+    echo ""
+    echo "Please download it from: https://www.diretta.link"
+    echo "  1. Visit the website"
+    echo "  2. Go to 'Download Preview' section"
+    echo "  3. Download DirettaHostSDK_147.tar.gz"
+    echo "  4. Extract to: $HOME/"
+    echo ""
+    read -p "Press Enter after you've downloaded and extracted the SDK..."
+    
+    if [ ! -d "$SDK_PATH" ]; then
+        print_error "SDK still not found. Please extract it to: $SDK_PATH"
+        exit 1
+    fi
+    
+    print_success "SDK found!"
+fi
+
+# Verify SDK contents
+if [ ! -f "$SDK_PATH/lib/libDirettaHost_x64-linux-15v3.a" ]; then
+    print_error "SDK libraries not found. Please check SDK installation."
+    exit 1
+fi
+
+# Build the renderer
+print_info "Building Diretta UPnP Renderer..."
+
+# Ensure we're in the script directory
+cd "$SCRIPT_DIR"
+
+if [ ! -f "Makefile" ]; then
+    print_error "Makefile not found in $SCRIPT_DIR"
+    print_info "Please run this script from the project directory"
+    exit 1
+fi
+
+# Update SDK path in Makefile if needed
+print_info "Configuring Makefile..."
+sed -i "s|SDK_PATH = .*|SDK_PATH = $SDK_PATH|g" Makefile
+
+# Build
+make clean
+make
+
+if [ ! -f "bin/DirettaRendererUPnP" ]; then
+    print_error "Build failed. Please check error messages above."
+    exit 1
+fi
+
+print_success "Build successful!"
+
+# Configure network
+print_info "Configuring network..."
+
+echo ""
+echo "Available network interfaces:"
+ip link show | grep -E "^[0-9]+:" | awk '{print $2}' | sed 's/://g'
+echo ""
+
+read -p "Enter your network interface name (e.g., enp4s0): " IFACE
+
+if [ -z "$IFACE" ]; then
+    print_warning "No interface specified, skipping network configuration"
+else
+    # Check if interface exists
+    if ip link show "$IFACE" &> /dev/null; then
+        print_info "Configuring MTU for $IFACE..."
+        
+        # Ask about jumbo frames
+        read -p "Enable jumbo frames (MTU 9000)? [y/N]: " ENABLE_JUMBO
+        
+        if [[ "$ENABLE_JUMBO" =~ ^[Yy]$ ]]; then
+            sudo ip link set "$IFACE" mtu 9000
+            print_success "Jumbo frames enabled (MTU 9000)"
+            
+            # Offer to make permanent
+            read -p "Make this permanent? [y/N]: " MAKE_PERMANENT
+            
+            if [[ "$MAKE_PERMANENT" =~ ^[Yy]$ ]]; then
+                case $OS in
+                    fedora|rhel|centos)
+                        CONN_NAME=$(nmcli -t -f NAME,DEVICE connection show | grep "$IFACE" | cut -d: -f1)
+                        if [ -n "$CONN_NAME" ]; then
+                            sudo nmcli connection modify "$CONN_NAME" 802-3-ethernet.mtu 9000
+                            print_success "MTU configured permanently in NetworkManager"
+                        fi
+                        ;;
+                    ubuntu|debian)
+                        print_info "Add this to /etc/network/interfaces:"
+                        echo "  mtu 9000"
+                        ;;
+                    *)
+                        print_info "Manual configuration required for permanent MTU"
+                        ;;
+                esac
+            fi
+        else
+            print_info "Using standard MTU (1500)"
+        fi
+    else
+        print_error "Interface $IFACE not found"
+    fi
+fi
+
+# Firewall configuration
+print_info "Configuring firewall..."
+
+read -p "Configure firewall to allow UPnP? [y/N]: " CONFIG_FIREWALL
+
+if [[ "$CONFIG_FIREWALL" =~ ^[Yy]$ ]]; then
+    case $OS in
+        fedora|rhel|centos)
+            sudo firewall-cmd --permanent --add-port=1900/udp
+            sudo firewall-cmd --permanent --add-port=4005/tcp
+            sudo firewall-cmd --permanent --add-port=4006/tcp
+            sudo firewall-cmd --reload
+            print_success "Firewall configured (firewalld)"
+            ;;
+        ubuntu|debian)
+            if command -v ufw &> /dev/null; then
+                sudo ufw allow 1900/udp
+                sudo ufw allow 4005/tcp
+                sudo ufw allow 4006/tcp
+                print_success "Firewall configured (ufw)"
+            else
+                print_warning "ufw not found, skipping firewall configuration"
+            fi
+            ;;
+        *)
+            print_info "Manual firewall configuration required"
+            print_info "Open ports: 1900/udp, 4005/tcp, 4006/tcp"
+            ;;
+    esac
+fi
+
+# Create systemd service
+print_info "Setting up systemd service..."
+
+read -p "Create systemd service for auto-start? [y/N]: " CREATE_SERVICE
+
+if [[ "$CREATE_SERVICE" =~ ^[Yy]$ ]]; then
+    SERVICE_FILE="/etc/systemd/system/diretta-renderer.service"
+    BIN_PATH="$(pwd)/bin/DirettaRendererUPnP"
+    
+    sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+[Unit]
+Description=Diretta UPnP Renderer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$(pwd)/bin
+ExecStart=$BIN_PATH --port 4005 --buffer 2.0
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Network capabilities
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    sudo systemctl daemon-reload
+    sudo systemctl enable diretta-renderer
+    
+    print_success "Systemd service created and enabled"
+    print_info "Start with: sudo systemctl start diretta-renderer"
+    print_info "View logs with: sudo journalctl -u diretta-renderer -f"
+fi
+
+# Installation complete
+echo ""
+echo "============================================"
+echo " Installation Complete! 🎉"
+echo "============================================"
+echo ""
+print_success "Diretta UPnP Renderer is ready to use!"
+echo ""
+echo "Quick Start:"
+echo "  1. Start the renderer:"
+echo "     sudo ./bin/DirettaRendererUPnP --port 4005 --buffer 2.0"
+echo ""
+echo "  2. Or use systemd service:"
+echo "     sudo systemctl start diretta-renderer"
+echo ""
+echo "  3. Open your UPnP control point (JPlay, BubbleUPnP, etc.)"
+echo "  4. Select 'Diretta Renderer' as output device"
+echo "  5. Enjoy your music! 🎵"
+echo ""
+echo "Documentation:"
+echo "  - README.md - Overview and quick start"
+echo "  - docs/INSTALLATION.md - Detailed installation"
+echo "  - docs/CONFIGURATION.md - Configuration options"
+echo "  - docs/TROUBLESHOOTING.md - Problem solving"
+echo ""
+echo "Support:"
+echo "  - GitHub Issues: Report bugs or request features"
+echo "  - Diretta Website: https://www.diretta.link"
+echo ""
+print_info "Have fun streaming! 🎧"
