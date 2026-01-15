@@ -451,7 +451,7 @@ install_ffmpeg() {
     echo ""
     echo "Installation options:"
     echo ""
-    echo "  1) Build FFmpeg 7.1 from source (recommended)"
+    echo "  1) Build FFmpeg 5.1.2 from source (recommended)"
     echo "     - Latest stable with LTO optimization"
     echo "     - Full DSD support, GCC 14/15 compatible"
     echo ""
