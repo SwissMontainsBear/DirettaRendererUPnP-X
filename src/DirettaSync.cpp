@@ -404,18 +404,16 @@ bool DirettaSync::open(const AudioFormat& format) {
             bool nowDSD = format.isDSD;
             bool nowPCM = !format.isDSD;
 
-            // Detect DSD rate change (especially downward transitions like DSD512→DSD64)
+            // Detect DSD rate change (any rate change, including clock domain switches)
+            // DSD512×44.1 (22,579,200 Hz) ↔ DSD512×48 (24,576,000 Hz) requires clock domain change
             bool isDsdRateChange = wasDSD && nowDSD &&
                                    (m_previousFormat.sampleRate != format.sampleRate);
-            bool isDsdDowngrade = isDsdRateChange &&
-                                  (m_previousFormat.sampleRate > format.sampleRate);
 
-            if (wasDSD && (nowPCM || isDsdDowngrade)) {
-                // DSD→PCM or DSD high→low rate: Full close/reopen for clean transition
+            if (wasDSD && (nowPCM || isDsdRateChange)) {
+                // DSD→PCM or any DSD rate change: Full close/reopen for clean transition
                 // I2S targets are timing-sensitive and need a clean break
-                // DSD rate downgrades (e.g., DSD512→DSD64) cause noise if the target's
-                // internal buffers aren't fully flushed - old high-rate data gets
-                // misinterpreted as low-rate data
+                // Rate changes cause noise if target's internal buffers aren't fully flushed
+                // Clock domain changes (44.1kHz ↔ 48kHz family) also require full reset
                 // Note: We can't send silence here because playback is already stopped
                 // (auto-stop happens before URI change), so getNewStream() isn't being called
                 if (nowPCM) {
@@ -424,7 +422,7 @@ bool DirettaSync::open(const AudioFormat& format) {
                     int prevMultiplier = m_previousFormat.sampleRate / 2822400;
                     int newMultiplier = format.sampleRate / 2822400;
                     std::cout << "[DirettaSync] DSD" << (prevMultiplier * 64) << "->DSD"
-                              << (newMultiplier * 64) << " downgrade - full close/reopen" << std::endl;
+                              << (newMultiplier * 64) << " rate change - full close/reopen" << std::endl;
                 }
 
                 int dsdMultiplier = m_previousFormat.sampleRate / 44100;
@@ -474,7 +472,7 @@ bool DirettaSync::open(const AudioFormat& format) {
 
                 // Fall through to full open path (needFullConnect is already true)
             } else {
-                // Other format changes (PCM→DSD, DSD upgrade, PCM rate change):
+                // Other format changes (PCM→DSD, PCM rate change):
                 // use existing reopenForFormatChange()
                 std::cout << "[DirettaSync] Format change - reopen" << std::endl;
                 if (!reopenForFormatChange()) {
@@ -1057,6 +1055,53 @@ void DirettaSync::resumePlayback() {
     DIRETTA_LOG("Resumed - buffer cleared, waiting for prefill");
 }
 
+void DirettaSync::sendPreTransitionSilence() {
+    if (!m_playing.load(std::memory_order_acquire)) {
+        DIRETTA_LOG("sendPreTransitionSilence: not playing, skipping");
+        return;
+    }
+
+    // Calculate silence buffers based on format
+    // DSD needs more silence, scaled by rate (DSD512 needs more than DSD64)
+    int silenceBuffers;
+    if (m_isDsdMode.load(std::memory_order_acquire)) {
+        // Get DSD multiplier (DSD64=1, DSD128=2, DSD256=4, DSD512=8)
+        int sampleRate = m_sampleRate.load(std::memory_order_acquire);
+        int dsdMultiplier = sampleRate / 2822400;  // DSD64 base rate
+        if (dsdMultiplier < 1) dsdMultiplier = 1;
+
+        // Scale silence: DSD64=100, DSD128=200, DSD256=400, DSD512=800
+        silenceBuffers = 100 * dsdMultiplier;
+        silenceBuffers = std::max(100, std::min(silenceBuffers, 1000));
+
+        DIRETTA_LOG("Pre-transition silence: DSD" << (dsdMultiplier * 64)
+                    << " -> " << silenceBuffers << " buffers");
+    } else {
+        // PCM needs less silence
+        silenceBuffers = 30;
+        DIRETTA_LOG("Pre-transition silence: PCM -> " << silenceBuffers << " buffers");
+    }
+
+    requestShutdownSilence(silenceBuffers);
+
+    // Wait for silence to be consumed by getNewStream()
+    // Timeout scales with buffer count to avoid blocking forever
+    int timeoutMs = std::max(300, silenceBuffers * 2);
+    auto start = std::chrono::steady_clock::now();
+
+    while (m_silenceBuffersRemaining.load(std::memory_order_acquire) > 0) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeoutMs)) {
+            DIRETTA_LOG("Pre-transition silence timeout after " << timeoutMs << "ms");
+            break;
+        }
+        std::this_thread::yield();
+    }
+
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    DIRETTA_LOG("Pre-transition silence complete in " << elapsed << "ms");
+}
+
 //=============================================================================
 // Audio Data (Push Interface)
 //=============================================================================
@@ -1199,17 +1244,33 @@ bool DirettaSync::getNewStream(DIRETTA::Stream& stream) {
     }
 
     // Post-online stabilization
-    // Scale stabilization buffers for higher DSD rates to allow CPU/cache warmup
-    // DSD512 needs more warmup cycles than DSD64 due to 8x data throughput
+    // Scale stabilization to achieve consistent WARMUP TIME regardless of MTU
+    // With small MTU (1500), getNewStream() is called more frequently (shorter cycle time)
+    // With large MTU (9000+), calls are less frequent (longer cycle time)
+    // We need to scale buffer count to achieve target warmup duration
     if (!m_postOnlineDelayDone.load(std::memory_order_acquire)) {
         int stabilizationTarget = static_cast<int>(DirettaBuffer::POST_ONLINE_SILENCE_BUFFERS);
+
         if (currentIsDsd) {
-            // Scale by DSD multiplier: DSD64=1x, DSD128=2x, DSD256=4x, DSD512=8x
+            // Target warmup time scales with DSD rate:
+            // DSD64: 50ms, DSD128: 100ms, DSD256: 200ms, DSD512: 400ms
             int currentSampleRate = m_sampleRate.load(std::memory_order_acquire);
-            int dsdMultiplier = currentSampleRate / 2822400;  // DSD64 baseline
-            if (dsdMultiplier > 1) {
-                stabilizationTarget *= dsdMultiplier;
-            }
+            int dsdMultiplier = currentSampleRate / 2822400;  // DSD64 = 1
+            int targetWarmupMs = 50 * std::max(1, dsdMultiplier);  // 50ms baseline
+
+            // Calculate cycle time based on MTU and data rate
+            // cycleTime = (efficientMTU / bytesPerSecond) in microseconds
+            int efficientMTU = static_cast<int>(m_effectiveMTU) - 24;  // Subtract overhead
+            double bytesPerSecond = static_cast<double>(currentSampleRate) * 2 / 8.0;  // 2ch, 1bit
+            double cycleTimeUs = (static_cast<double>(efficientMTU) / bytesPerSecond) * 1000000.0;
+
+            // Calculate buffers needed for target warmup time
+            // targetWarmupMs * 1000 = warmup in microseconds
+            double buffersNeeded = (targetWarmupMs * 1000.0) / cycleTimeUs;
+            stabilizationTarget = static_cast<int>(std::ceil(buffersNeeded));
+
+            // Clamp to reasonable range
+            stabilizationTarget = std::max(50, std::min(stabilizationTarget, 3000));
         }
 
         int count = m_stabilizationCount.fetch_add(1, std::memory_order_acq_rel) + 1;

@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-01-15
+
+### Pre-Transition Silence for DSD Format Changes
+
+**Problem:** Crackling noise when switching DSD rates or transitioning DSD→PCM, despite previous fixes (full close/reopen with delays). The issue reappeared after Zen3 stabilization buffer changes.
+
+**Root cause analysis:**
+- When `onSetURI` receives a new track, it calls `stopPlayback(true)` (immediate)
+- With `immediate=true`, NO silence buffers are sent before stopping
+- The Diretta target's internal buffers still contain old DSD audio
+- Comment in code acknowledged this: "We can't send silence here because playback is already stopped"
+- The Zen3 stabilization change (longer post-online warmup) gave more time for residual audio artifacts to manifest
+
+**Solution:** Added `sendPreTransitionSilence()` method that sends rate-scaled silence BEFORE calling `stopPlayback()`:
+
+| DSD Rate | Silence Buffers | Rationale |
+|----------|-----------------|-----------|
+| DSD64    | 100             | Base level |
+| DSD128   | 200             | 2× data rate |
+| DSD256   | 400             | 4× data rate |
+| DSD512   | 800             | 8× data rate |
+| PCM      | 30              | Lower throughput |
+
+**Implementation:**
+- New public method `DirettaSync::sendPreTransitionSilence()`
+- Calculates silence buffers based on current DSD rate: `100 × (sampleRate / 2822400)`
+- Waits for silence to be consumed by `getNewStream()` (timeout scales with buffer count)
+- Called in two locations:
+  1. `onSetURI` callback before `stopPlayback()` (normal track change)
+  2. Audio callback format change detection (gapless transitions)
+
+**Transition flow after fix:**
+```
+1. onSetURI receives new track
+2. m_audioEngine->stop()
+3. waitForCallbackComplete()
+4. sendPreTransitionSilence()  ← NEW: Flushes Diretta pipeline
+5. stopPlayback(true)
+6. [New format open() proceeds with clean target state]
+```
+
+**Files:**
+- `src/DirettaSync.h` (lines 244-251) - Method declaration
+- `src/DirettaSync.cpp` (lines 1058-1103) - Implementation
+- `src/DirettaRenderer.cpp` (lines 366-368, 226-228) - Call sites
+
+**Status:** Significantly improved. If crackling persists in edge cases, consider:
+- Increasing silence buffer multiplier
+- Adjusting timeout scaling
+- Adding post-silence delay before `stopPlayback()`
+
 ## 2026-01-14
 
 ### 1. DSD Buffer Optimization - Pre-allocated Buffers
@@ -34,33 +85,139 @@
 | Heap allocations per DSD read | 2 (std::vector) | 0 (steady state) |
 | Memory pattern | Alloc/free every call | Pre-allocated, reused |
 
-### 3. DSD512 Startup Fix for Zen3 CPUs
+### 3. DSD512 Startup Fix for Zen3 CPUs (MTU-Aware)
 
-- Scaled post-online stabilization buffers based on DSD rate
-- Higher DSD rates now get proportionally more warmup cycles
+- Scaled post-online stabilization to achieve consistent **warmup TIME** regardless of MTU
 - Fixes harsh sound at DSD512 startup on AMD Zen3 systems (works fine on Zen4)
 - Root cause: Zen3's slower memory controller and different cache hierarchy need more warmup time at high data throughput
+- Additional issue: With small MTU (1500), `getNewStream()` is called more frequently (shorter cycle time), so a fixed buffer count resulted in insufficient warmup time
 
-| DSD Rate | Stabilization Buffers | Warmup Time |
-|----------|----------------------|-------------|
-| DSD64    | 50 (unchanged)       | ~50ms       |
-| DSD128   | 100 (2x)             | ~100ms      |
-| DSD256   | 200 (4x)             | ~200ms      |
-| DSD512   | 400 (8x)             | ~400ms      |
+**Target warmup time by DSD rate:**
 
-- **Files:** `src/DirettaSync.cpp` (lines 1180-1203)
+| DSD Rate | Target Warmup |
+|----------|---------------|
+| DSD64    | 50ms          |
+| DSD128   | 100ms         |
+| DSD256   | 200ms         |
+| DSD512   | 400ms         |
 
-### 4. DSD Rate Downgrade Transition Noise Fix
+**Buffer count scales with MTU to achieve target time:**
 
-- DSD rate downgrades (e.g., DSD512→DSD64) now use full close/reopen
+| MTU | Cycle Time (DSD512) | Buffers for 400ms |
+|-----|---------------------|-------------------|
+| 1500 | 261 μs | ~1530 buffers |
+| 9000 | 1,590 μs | ~252 buffers |
+| 16128 | 2,853 μs | ~140 buffers |
+
+**Formula:**
+```
+targetWarmupMs = 50ms × dsdMultiplier
+cycleTimeUs = (MTU - 24) / bytesPerSecond × 1,000,000
+buffersNeeded = targetWarmupMs × 1000 / cycleTimeUs
+```
+
+- **Files:** `src/DirettaSync.cpp` (lines 1201-1239)
+
+### 4. DSD Rate Change Transition Noise Fix
+
+- **All DSD rate changes** now use full close/reopen (not just downgrades)
+- Includes clock domain changes: DSD512×44.1kHz ↔ DSD512×48kHz
 - Previously used `reopenForFormatChange()` which tries to send silence buffers
 - Problem: When user selects new track, playback stops before transition, so `getNewStream()` isn't called and silence buffers never get sent to target
-- Target's internal buffers still contain high-rate DSD data → misinterpreted as low-rate → noise
+- Target's internal buffers still contain old DSD data → causes noise on new format
 - Solution: Same aggressive approach as DSD→PCM (full `DIRETTA::Sync::close()` + delay + fresh `open()`)
-- DSD→PCM: 800ms delay (clock domain switch)
-- DSD downgrade: 400ms delay (buffer flush)
-- DSD upgrade and other transitions: unchanged (use `reopenForFormatChange()`)
-- **Files:** `src/DirettaSync.cpp` (lines 401-486)
+
+| Transition | Action | Delay |
+|------------|--------|-------|
+| DSD→PCM | Full close/reopen | 800ms |
+| DSD→DSD (any rate change) | Full close/reopen | 400ms |
+| PCM→DSD | reopenForFormatChange() | 800ms |
+| PCM→PCM (rate change) | reopenForFormatChange() | 800ms |
+
+- **Files:** `src/DirettaSync.cpp` (lines 401-482)
+
+### 5. Install Script Restructuring
+
+Complete rewrite of `install.sh` with modular architecture and improved FFmpeg handling.
+
+**Structural improvements:**
+- Modular function-based architecture with clear section headers
+- CLI argument support: `--full`, `--deps`, `--build`, `--configure`, `--optimize`, `--help`
+- Interactive menu system with numbered options
+- `confirm()` helper for consistent yes/no prompts
+
+**FFmpeg changes:**
+- Removed FFmpeg 5.1.2 and 6.1.1 (both have DSD segfault issues with GCC 14+)
+- FFmpeg 7.1 is now the only source build option
+- Build flags: `--enable-lto` for link-time optimization
+- Added `mjpeg` and `png` decoders for embedded album art in DSF/DFF files
+- Options: Build from source (recommended), RPM Fusion (Fedora), System packages
+
+**Network buffer optimization:**
+- Added sysctl settings for high-resolution audio streaming:
+  - `net.core.rmem_max=16777216` (16MB receive buffer)
+  - `net.core.wmem_max=16777216` (16MB send buffer)
+- Available in both normal network config and aggressive optimization
+- Persistent via `/etc/sysctl.d/99-diretta.conf`
+
+**Fedora aggressive optimization (option 5):**
+- Integrated from `optimize_fedora_server.sh`
+- Removes: firewalld, SELinux, polkit, gssproxy
+- Disables: journald, oomd, homed, auditd
+- Replaces sshd with dropbear (lightweight SSH)
+- Double confirmation required (safety)
+- Intended for dedicated audio servers only
+
+- **Files:** `install.sh`
+
+### 6. CPU Isolation and Thread Distribution Tuner Scripts
+
+Added two tuner scripts for CPU core isolation and real-time scheduling optimization.
+
+**Common features (both scripts):**
+- CPU isolation via kernel parameters (`isolcpus`, `nohz_full`, `rcu_nocbs`)
+- Systemd slice for CPU pinning
+- Real-time FIFO scheduling (priority 90)
+- IRQ affinity to housekeeping cores
+- CPU governor set to performance
+- Automatic thread distribution across cores (via `ExecStartPost`)
+- Manual `redistribute` command for testing without service restart
+
+**Option 1: `diretta-renderer-tuner.sh` (SMT enabled)**
+
+For systems where SMT (Hyper-Threading) is acceptable:
+- Housekeeping: cores 0,8 (1 physical core + SMT sibling)
+- Renderer: cores 1-7,9-15 (14 logical CPUs)
+- 11 threads distributed across 14 CPUs (~1 thread per CPU)
+
+**Option 2: `diretta-renderer-tuner-nosmt.sh` (SMT disabled)**
+
+For dedicated audio servers with low system load:
+- Adds `nosmt` kernel parameter to disable Hyper-Threading
+- Housekeeping: core 0 (1 physical core)
+- Renderer: cores 1-7 (7 physical cores)
+- 11 threads distributed across 7 cores (~1.5 threads per core)
+
+**Recommendation:**
+- For dedicated low-load audio servers: **no-SMT** provides more predictable latency
+- For multi-purpose systems: **SMT** provides more parallelism
+
+**Usage:**
+```bash
+# Apply configuration (requires reboot for kernel params)
+sudo ./diretta-renderer-tuner.sh apply
+
+# Test thread distribution immediately (no reboot)
+sudo ./diretta-renderer-tuner.sh redistribute
+
+# Check current status and thread layout
+sudo ./diretta-renderer-tuner.sh status
+
+# Revert all changes
+sudo ./diretta-renderer-tuner.sh revert
+```
+
+- **Files:** `diretta-renderer-tuner.sh`, `diretta-renderer-tuner-nosmt.sh`
 
 ---
 

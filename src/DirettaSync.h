@@ -241,6 +241,15 @@ public:
     void pausePlayback();
     void resumePlayback();
 
+    /**
+     * @brief Send silence buffers before format transition
+     *
+     * Call this BEFORE stopPlayback() when changing formats (DSD→PCM, DSD rate change).
+     * Silence buffers flush the Diretta pipeline to prevent crackling on transitions.
+     * Scales silence duration with DSD rate (higher rates need more buffers).
+     */
+    void sendPreTransitionSilence();
+
     bool isPlaying() const { return m_playing; }
     bool isPaused() const { return m_paused; }
 
