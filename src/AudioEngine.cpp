@@ -1551,10 +1551,10 @@ bool AudioEngine::process(size_t samplesNeeded) {
             std::string nextURI = m_nextURI;
             std::string nextMetadata = m_nextMetadata;
 
-            // Signal track end to allow clean transition
-            if (m_trackEndCallback) {
-                m_trackEndCallback();
-            }
+            // NOTE: Do NOT call m_trackEndCallback() here!
+            // trackEndCallback is for playlist END (releases Diretta target).
+            // For format changes, we want to keep the connection alive and
+            // let DirettaSync::open() handle the format transition.
 
             // Apply next URI as current
             m_currentURI = nextURI;

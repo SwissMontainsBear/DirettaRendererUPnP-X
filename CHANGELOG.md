@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-01-17 (Session 3) - Format Change Gapless Fix
+
+### Bug Fix
+
+**Fixed:** Track changes with format/sample rate changes now auto-resume correctly.
+
+**Root cause:** During gapless playback with format changes (e.g., DSD→PCM, 44.1kHz→96kHz), the `trackEndCallback` was incorrectly being called. This callback is designed for **playlist end** and calls `m_direttaSync->release()`, which fully disconnects from the Diretta target and sets transport state to STOPPED.
+
+**Symptom:** After a track ended and the next track had a different format, playback would stop and require manual Play command to continue.
+
+**Fix:** Removed the `trackEndCallback()` call from the format change transition path in `AudioEngine::process()`. The format change path now correctly keeps the Diretta connection alive and lets `DirettaSync::open()` handle the format transition.
+
+**File changed:** `src/AudioEngine.cpp` (lines 1554-1557)
+
+---
+
 ## 2026-01-17 (Session 2) - Timing Variance Optimization
 
 Systematic optimization pass focused on reducing timing variance in the audio hot path. Based on the principle that consistent timing matters more than average-case speed for audio quality.
