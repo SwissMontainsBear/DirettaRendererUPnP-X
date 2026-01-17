@@ -1,0 +1,4 @@
+{
+  "$schema": "https://claude.ai/claude-code/settings.schema.json",
+  "projectInstructions": "See CLAUDE.md at project root (symlinked to docs/CLAUDE.md)"
+}

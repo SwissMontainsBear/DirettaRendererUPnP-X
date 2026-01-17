@@ -1,0 +1,29 @@
+[Unit]
+Description=Diretta UPnP Renderer
+Documentation=https://github.com/cometdom/DirettaRendererUPnP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/diretta-renderer-upnp
+EnvironmentFile=-/opt/diretta-renderer-upnp/diretta-renderer.conf
+
+# Use wrapper script to handle complex command building
+ExecStart=/opt/diretta-renderer-upnp/start-renderer.sh
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=diretta-renderer
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+# Performance optimizations
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
+[Install]
+WantedBy=multi-user.target
