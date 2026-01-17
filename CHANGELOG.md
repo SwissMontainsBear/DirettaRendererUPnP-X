@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-01-18 - Known Issue with SDK 148
+
+**Issue:** Track changes may fail or cause segfault when using SDK 148 (works fine with SDK 147).
+
+**Symptom:** First track plays fine, but on track change (especially with format change like 44.1kHz→48kHz), playback starts briefly then stops, or crashes.
+
+**Current status:** Testing the EXPERIMENTAL: User Interaction Full Reopen feature (Session 4) as a fix. This forces a full SDK reopen sequence via `reopenForFormatChange()` for user-initiated track changes, which includes the `setSink()` retry loop that may be required for SDK 148.
+
+**Workaround:** Use SDK 147, or checkout commit `29ecf0b` for a known-working version:
+```bash
+git checkout 29ecf0b
+```
+
+---
+
+## 2026-01-18 (Session 6) - PCM Buffer Rounding Drift Fix
+
+**Credit:** leeeanh (commit 0841b2c)
+
+### Problem
+
+For 44.1kHz-family sample rates (44100, 88200, 176400Hz), buffer size calculation caused gradual drift:
+- Frames per 1ms = 44.1 (fractional)
+- Old code rounded up: `(rate + 999) / 1000` = 45 frames
+- Each buffer was 0.9 frames too large
+- Consumer gradually requested more data than producer provided
+- Result: underruns like `avail=8 need=360`
+
+### Solution
+
+Bresenham-style accumulator tracks fractional frames:
+```
+44100Hz → base=44, remainder=100
+Every getNewStream():
+  accumulator += remainder
+  if (accumulator >= 1000):
+    accumulator -= 1000
+    add 1 extra frame
+```
+
+Over 10 buffers: 9×44 + 1×45 = 441 frames = exactly 44.1 avg
+
+### C1 Integration
+
+Integrated into C1 generation counter caching to minimize hot path overhead:
+- `bytesPerFrame` and `framesPerBufferRemainder` cached on format change
+- Only the accumulator (per-call state) uses atomic operations
+
+**Files changed:**
+- `src/DirettaSync.h` - Added `m_bytesPerFrame`, `m_framesPerBufferRemainder`, `m_framesPerBufferAccumulator` atomics; cached consumer state members
+- `src/DirettaSync.cpp` - Accumulator logic in `getNewStream()`, initialization in `configureRingPCM/DSD()` and `fullReset()`
+
+---
+
 ## 2026-01-18 (Session 5) - Consumer Hot Path Optimization
 
 Based on leeeanh's analysis. Implements C1 and C2 optimizations from his design document.

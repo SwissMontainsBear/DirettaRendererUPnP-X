@@ -412,6 +412,9 @@ private:
     std::atomic<int> m_bytesPerSample{2};
     std::atomic<int> m_inputBytesPerSample{2};
     std::atomic<int> m_bytesPerBuffer{176};
+    std::atomic<int> m_bytesPerFrame{0};
+    std::atomic<uint32_t> m_framesPerBufferRemainder{0};
+    std::atomic<uint32_t> m_framesPerBufferAccumulator{0};
     std::atomic<bool> m_need24BitPack{false};
     std::atomic<bool> m_need16To32Upsample{false};
     std::atomic<bool> m_isDsdMode{false};
@@ -446,6 +449,8 @@ private:
     uint8_t m_cachedSilenceByte{0};
     bool m_cachedConsumerIsDsd{false};
     int m_cachedConsumerSampleRate{44100};
+    int m_cachedBytesPerFrame{0};
+    uint32_t m_cachedFramesPerBufferRemainder{0};
 
     // Prefill and stabilization
     size_t m_prefillTarget = 0;
