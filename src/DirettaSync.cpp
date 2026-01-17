@@ -1209,7 +1209,10 @@ float DirettaSync::getBufferLevel() const {
 // DIRETTA::Sync Overrides
 //=============================================================================
 
-bool DirettaSync::getNewStream(DIRETTA::Stream& stream) {
+bool DirettaSync::getNewStream(diretta_stream& baseStream) {
+    // SDK 148+ uses diretta_stream& but passes DIRETTA::Stream objects
+    DIRETTA::Stream& stream = static_cast<DIRETTA::Stream&>(baseStream);
+
     m_workerActive = true;
 
     int currentBytesPerBuffer = m_bytesPerBuffer.load(std::memory_order_acquire);

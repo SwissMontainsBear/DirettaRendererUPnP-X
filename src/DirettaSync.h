@@ -316,7 +316,7 @@ protected:
     // DIRETTA::Sync Overrides
     //=========================================================================
 
-    bool getNewStream(DIRETTA::Stream& stream) override;
+    bool getNewStream(diretta_stream& stream) override;
     bool getNewStreamCmp() override { return true; }
     bool startSyncWorker() override;
     void statusUpdate() override {}
