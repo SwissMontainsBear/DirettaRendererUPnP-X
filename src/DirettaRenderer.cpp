@@ -338,10 +338,13 @@ bool DirettaRenderer::start() {
         m_audioEngine->setTrackEndCallback([this]() {
             std::cout << "[DirettaRenderer] Track ended naturally" << std::endl;
 
-            // Fully release the Diretta target on playlist end
-            // This closes the SDK connection so the target can accept other sources
-            // Using release() instead of close() ensures complete disconnection
             if (m_direttaSync) {
+                // Stop playback first to prevent underrun log spam
+                // This sets m_stopRequested which outputs silence instead of logging underruns
+                m_direttaSync->stopPlayback(true);
+
+                // Fully release the Diretta target on playlist end
+                // This closes the SDK connection so the target can accept other sources
                 m_direttaSync->release();
             }
 
