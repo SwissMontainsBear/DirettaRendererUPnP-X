@@ -235,37 +235,52 @@ FFMPEG_HEADER_VERSION := $(shell \
 
 # Map libavformat major version to FFmpeg version
 # libavformat 62 = FFmpeg 8.x, 61 = FFmpeg 7.x, 60 = FFmpeg 6.x, 59 = FFmpeg 5.x, 58 = FFmpeg 4.x
-FFMPEG_HEADER_FFVERSION := $(shell \
-    case "$(FFMPEG_HEADER_VERSION)" in \
-        62) echo "8.x" ;; \
-        61) echo "7.x" ;; \
-        60) echo "6.x" ;; \
-        59) echo "5.x" ;; \
-        58) echo "4.x" ;; \
-        *) echo "unknown" ;; \
-    esac)
+ifeq ($(FFMPEG_HEADER_VERSION),62)
+    FFMPEG_HEADER_FFVERSION := 8.x
+else ifeq ($(FFMPEG_HEADER_VERSION),61)
+    FFMPEG_HEADER_FFVERSION := 7.x
+else ifeq ($(FFMPEG_HEADER_VERSION),60)
+    FFMPEG_HEADER_FFVERSION := 6.x
+else ifeq ($(FFMPEG_HEADER_VERSION),59)
+    FFMPEG_HEADER_FFVERSION := 5.x
+else ifeq ($(FFMPEG_HEADER_VERSION),58)
+    FFMPEG_HEADER_FFVERSION := 4.x
+else
+    FFMPEG_HEADER_FFVERSION := unknown
+endif
 
 # Detect runtime library version
+# Try pkg-config first, then ldconfig fallback for systems without .pc files
 FFMPEG_LIB_VERSION := $(shell \
-    pkg-config --modversion libavformat 2>/dev/null | cut -d. -f1 || \
-    (ldconfig -p 2>/dev/null | grep libavformat | head -1 | grep -oE '[0-9]+\.[0-9]+' | cut -d. -f1) || \
-    echo "unknown")
+    v=$$(pkg-config --modversion libavformat 2>/dev/null | cut -d. -f1); \
+    if [ -n "$$v" ]; then echo "$$v"; \
+    else ldconfig -p 2>/dev/null | grep 'libavformat\.so\.[0-9]' | head -1 | sed 's/.*libavformat\.so\.\([0-9]*\).*/\1/' || echo "unknown"; \
+    fi)
 
 # Map runtime library to FFmpeg version
-FFMPEG_LIB_FFVERSION := $(shell \
-    case "$(FFMPEG_LIB_VERSION)" in \
-        62) echo "8.x" ;; \
-        61) echo "7.x" ;; \
-        60) echo "6.x" ;; \
-        59) echo "5.x" ;; \
-        58) echo "4.x" ;; \
-        8) echo "8.x" ;; \
-        7) echo "7.x" ;; \
-        6) echo "6.x" ;; \
-        5) echo "5.x" ;; \
-        4) echo "4.x" ;; \
-        *) echo "unknown" ;; \
-    esac)
+ifeq ($(FFMPEG_LIB_VERSION),62)
+    FFMPEG_LIB_FFVERSION := 8.x
+else ifeq ($(FFMPEG_LIB_VERSION),61)
+    FFMPEG_LIB_FFVERSION := 7.x
+else ifeq ($(FFMPEG_LIB_VERSION),60)
+    FFMPEG_LIB_FFVERSION := 6.x
+else ifeq ($(FFMPEG_LIB_VERSION),59)
+    FFMPEG_LIB_FFVERSION := 5.x
+else ifeq ($(FFMPEG_LIB_VERSION),58)
+    FFMPEG_LIB_FFVERSION := 4.x
+else ifeq ($(FFMPEG_LIB_VERSION),8)
+    FFMPEG_LIB_FFVERSION := 8.x
+else ifeq ($(FFMPEG_LIB_VERSION),7)
+    FFMPEG_LIB_FFVERSION := 7.x
+else ifeq ($(FFMPEG_LIB_VERSION),6)
+    FFMPEG_LIB_FFVERSION := 6.x
+else ifeq ($(FFMPEG_LIB_VERSION),5)
+    FFMPEG_LIB_FFVERSION := 5.x
+else ifeq ($(FFMPEG_LIB_VERSION),4)
+    FFMPEG_LIB_FFVERSION := 4.x
+else
+    FFMPEG_LIB_FFVERSION := unknown
+endif
 
 # Display FFmpeg configuration
 $(info )
