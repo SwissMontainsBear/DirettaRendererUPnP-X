@@ -1354,11 +1354,9 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     }
 
     if (stream.size() != static_cast<size_t>(currentBytesPerBuffer)) {
-        // SDK 148: Use resize_noremap() to avoid reallocation when internal
-        // capacity is sufficient (reduces malloc/free in hot path)
-        if (!stream.resize_noremap(currentBytesPerBuffer)) {
-            stream.resize(currentBytesPerBuffer);  // Fallback if capacity insufficient
-        }
+        // Note: SDK 148's resize_noremap() crashes on freshly created streams
+        // after reopenForFormatChange(). Using standard resize() for safety.
+        stream.resize(currentBytesPerBuffer);
     }
 
     uint8_t* dest = reinterpret_cast<uint8_t*>(stream.get_16());

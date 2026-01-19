@@ -39,25 +39,15 @@ Fixes segmentation fault during:
 
 Optimizations leveraging new SDK 148 features.
 
-### Use `resize_noremap()` in Hot Path
+### ~~Use `resize_noremap()` in Hot Path~~ (REVERTED)
 
-**Problem:** `stream.resize()` may reallocate memory even when internal capacity is sufficient.
+**Attempted:** Use SDK 148's `resize_noremap()` to avoid reallocation.
 
-**Solution:** Use SDK 148's `resize_noremap()` which avoids reallocation when possible.
+**Result:** ❌ **REVERTED** - `resize_noremap()` crashes on freshly created Stream objects after `reopenForFormatChange()`. The internal vector is uninitialized and `_M_default_append()` segfaults.
 
-**File:** `src/DirettaSync.cpp:1337-1343`
+**Workaround:** Continue using standard `resize()` which handles all cases safely.
 
-```cpp
-// Before: Always potentially reallocates
-stream.resize(currentBytesPerBuffer);
-
-// After: Avoid reallocation when capacity sufficient
-if (!stream.resize_noremap(currentBytesPerBuffer)) {
-    stream.resize(currentBytesPerBuffer);  // Fallback
-}
-```
-
-**Impact:** Reduces malloc/free calls in `getNewStream()` hot path.
+**Future:** Investigate if `resize_noremap()` requires explicit initialization or is only safe for already-allocated streams.
 
 ---
 
