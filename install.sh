@@ -334,6 +334,11 @@ build_ffmpeg_8_minimal() {
 
     print_info "Installing FFmpeg to /usr..."
     sudo make install
+
+    # Ensure /usr/lib is in ldconfig search path (Debian multi-arch may not include it)
+    if [ ! -f /etc/ld.so.conf.d/ffmpeg-usr.conf ]; then
+        echo "/usr/lib" | sudo tee /etc/ld.so.conf.d/ffmpeg-usr.conf > /dev/null
+    fi
     sudo ldconfig
 
     cd "$SCRIPT_DIR"
@@ -517,14 +522,35 @@ test_ffmpeg_installation() {
 test_ffmpeg_libraries() {
     print_info "Checking FFmpeg libraries directly..."
 
+    # Force ldconfig cache refresh first
+    sudo ldconfig 2>/dev/null || true
+
     # Check that libraries are loadable
     local libs_ok=true
     local required_libs="libavformat libavcodec libavutil libswresample"
 
     for lib in $required_libs; do
+        local found=false
+        local version="unknown"
+
+        # Method 1: Check ldconfig cache
         if ldconfig -p 2>/dev/null | grep -q "$lib"; then
-            local version
+            found=true
             version=$(pkg-config --modversion "$lib" 2>/dev/null || echo "unknown")
+        fi
+
+        # Method 2: Check common library paths directly
+        if [ "$found" = false ]; then
+            for libdir in /usr/lib /usr/lib64 /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu; do
+                if ls "$libdir"/${lib}.so* 2>/dev/null | head -1 | grep -q "$lib"; then
+                    found=true
+                    version=$(pkg-config --modversion "$lib" 2>/dev/null || echo "found")
+                    break
+                fi
+            done
+        fi
+
+        if [ "$found" = true ]; then
             echo "  [OK] $lib ($version)"
         else
             echo "  [MISSING] $lib"
@@ -534,6 +560,7 @@ test_ffmpeg_libraries() {
 
     if [ "$libs_ok" = false ]; then
         print_error "Required FFmpeg libraries not found"
+        print_info "Try running: sudo ldconfig"
         return 1
     fi
 
