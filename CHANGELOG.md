@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-01-19 - FFmpeg Version Mismatch Detection
+
+### Problem
+
+Compiling with FFmpeg headers from one version (e.g., 7.x) but linking against libraries from another version (e.g., 5.x) causes segmentation faults at runtime. This is painful to diagnose as the crash occurs deep in FFmpeg code with no obvious cause.
+
+### Solution
+
+The Makefile now:
+1. Detects FFmpeg header version (from `libavformat/version_major.h`)
+2. Detects runtime library version (via `pkg-config` or `ldconfig`)
+3. Displays both versions during build
+4. **Errors if versions mismatch** (prevents building broken binaries)
+
+### Build Output
+
+```
+═══════════════════════════════════════════════════════
+  FFmpeg Configuration
+═══════════════════════════════════════════════════════
+Headers path:     /usr/include
+Headers version:  libavformat 62 (FFmpeg 8.x)
+Library version:  libavformat 62 (FFmpeg 8.x)
+═══════════════════════════════════════════════════════
+```
+
+### New Make Options
+
+| Option | Description |
+|--------|-------------|
+| `FFMPEG_PATH=<path>` | Use specific FFmpeg headers directory |
+| `FFMPEG_LIB_PATH=<path>` | Use specific FFmpeg library directory |
+| `FFMPEG_IGNORE_MISMATCH=1` | Force build despite version mismatch |
+
+### Supported Versions
+
+| libavformat | FFmpeg |
+|-------------|--------|
+| 62 | 8.x |
+| 61 | 7.x |
+| 60 | 6.x |
+| 59 | 5.x |
+| 58 | 4.x |
+
+---
+
 ## 2026-01-18 - PCM Buffer Rounding Drift Fix
 
 **Credit:** leeeanh (commit 0841b2c)
