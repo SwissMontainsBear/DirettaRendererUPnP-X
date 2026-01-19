@@ -13,7 +13,7 @@ set -e  # Exit on error
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SDK_PATH="${DIRETTA_SDK_PATH:-$HOME/DirettaHostSDK_147}"
+SDK_PATH="${DIRETTA_SDK_PATH:-$HOME/DirettaHostSDK_148}"
 FFMPEG_BUILD_DIR="/tmp/ffmpeg-build"
 FFMPEG_HEADERS_DIR="$SCRIPT_DIR/ffmpeg-headers"
 FFMPEG_TARGET_VERSION="8.0.1"
@@ -289,6 +289,16 @@ build_ffmpeg_8_minimal() {
 
     print_info "Building FFmpeg $version (minimal audio-only)..."
 
+    # Clean up old FFmpeg libraries from /usr/local to avoid version conflicts
+    if ls /usr/local/lib/libav* /usr/local/lib/libsw* 2>/dev/null | head -1 >/dev/null 2>&1; then
+        print_info "Removing old FFmpeg libraries from /usr/local/lib..."
+        sudo rm -f /usr/local/lib/libav*.so* /usr/local/lib/libsw*.so* 2>/dev/null || true
+        sudo rm -f /usr/local/lib/libav*.a /usr/local/lib/libsw*.a 2>/dev/null || true
+        sudo rm -rf /usr/local/lib/pkgconfig/libav* /usr/local/lib/pkgconfig/libsw* 2>/dev/null || true
+        sudo rm -rf /usr/local/include/libav* /usr/local/include/libsw* 2>/dev/null || true
+        sudo ldconfig
+    fi
+
     install_ffmpeg_8_build_deps
 
     mkdir -p "$FFMPEG_BUILD_DIR"
@@ -429,9 +439,11 @@ test_ffmpeg_installation() {
         ffmpeg_bin=$(which ffmpeg 2>/dev/null || echo "")
     fi
 
+    # If no binary available (--disable-programs build), use library-based checks
     if [ -z "$ffmpeg_bin" ] || [ ! -x "$ffmpeg_bin" ]; then
-        print_error "FFmpeg binary not found"
-        return 1
+        print_info "No ffmpeg binary found (minimal build with --disable-programs)"
+        test_ffmpeg_libraries
+        return $?
     fi
 
     # Check version
@@ -499,6 +511,54 @@ test_ffmpeg_installation() {
     else
         print_warning "FFmpeg decode test failed - there may be issues"
     fi
+}
+
+# Test FFmpeg libraries directly (when no ffmpeg binary is available)
+test_ffmpeg_libraries() {
+    print_info "Checking FFmpeg libraries directly..."
+
+    # Check that libraries are loadable
+    local libs_ok=true
+    local required_libs="libavformat libavcodec libavutil libswresample"
+
+    for lib in $required_libs; do
+        if ldconfig -p 2>/dev/null | grep -q "$lib"; then
+            local version
+            version=$(pkg-config --modversion "$lib" 2>/dev/null || echo "unknown")
+            echo "  [OK] $lib ($version)"
+        else
+            echo "  [MISSING] $lib"
+            libs_ok=false
+        fi
+    done
+
+    if [ "$libs_ok" = false ]; then
+        print_error "Required FFmpeg libraries not found"
+        return 1
+    fi
+
+    # Check library version from pkg-config
+    local avformat_ver
+    avformat_ver=$(pkg-config --modversion libavformat 2>/dev/null || echo "unknown")
+    print_success "FFmpeg libraries installed (libavformat $avformat_ver)"
+
+    # Map version to FFmpeg major version
+    local major_ver="${avformat_ver%%.*}"
+    case "$major_ver" in
+        62) print_info "FFmpeg 8.x detected" ;;
+        61) print_info "FFmpeg 7.x detected" ;;
+        60) print_info "FFmpeg 6.x detected" ;;
+        59) print_info "FFmpeg 5.x detected" ;;
+        58) print_info "FFmpeg 4.x detected" ;;
+        *) print_info "FFmpeg version: unknown (libavformat $avformat_ver)" ;;
+    esac
+
+    # Note: Without ffmpeg binary, we can't test specific codecs at runtime
+    # The codecs were enabled at compile time via configure options
+    print_info "Codec verification skipped (no ffmpeg binary)"
+    print_info "Enabled at build time: flac, alac, pcm_s*, dsd_*, aac"
+
+    return 0
 }
 
 install_ffmpeg_rpm_fusion() {
@@ -840,10 +900,10 @@ check_diretta_sdk() {
     # Check common SDK locations
     local sdk_locations=(
         "$SDK_PATH"
-        "$HOME/DirettaHostSDK_147"
-        "$HOME/DirettaHostSDK_147_19"
-        "./DirettaHostSDK_147"
-        "/opt/DirettaHostSDK_147"
+        "$HOME/DirettaHostSDK_148"
+        "$HOME/DirettaHostSDK_148_19"
+        "./DirettaHostSDK_148"
+        "/opt/DirettaHostSDK_148"
     )
 
     for loc in "${sdk_locations[@]}"; do
@@ -861,7 +921,7 @@ check_diretta_sdk() {
     echo "Please download it from: https://www.diretta.link"
     echo "  1. Visit the website"
     echo "  2. Go to 'Download Preview' section"
-    echo "  3. Download DirettaHostSDK_147.tar.gz"
+    echo "  3. Download DirettaHostSDK_148.tar.gz"
     echo "  4. Extract to: $HOME/"
     echo ""
     read -p "Press Enter after you've downloaded and extracted the SDK..."
