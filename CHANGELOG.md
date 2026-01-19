@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-01-19 - SDK 148 Specific Optimizations
+
+Optimizations leveraging new SDK 148 features.
+
+### Use `resize_noremap()` in Hot Path
+
+**Problem:** `stream.resize()` may reallocate memory even when internal capacity is sufficient.
+
+**Solution:** Use SDK 148's `resize_noremap()` which avoids reallocation when possible.
+
+**File:** `src/DirettaSync.cpp:1337-1343`
+
+```cpp
+// Before: Always potentially reallocates
+stream.resize(currentBytesPerBuffer);
+
+// After: Avoid reallocation when capacity sufficient
+if (!stream.resize_noremap(currentBytesPerBuffer)) {
+    stream.resize(currentBytesPerBuffer);  // Fallback
+}
+```
+
+**Impact:** Reduces malloc/free calls in `getNewStream()` hot path.
+
+---
+
+### MSMODE Capability Logging
+
+**Feature:** Log target's supported multi-stream modes (MS1/MS2/MS3) via SDK 148's `supportMSmode` field.
+
+**File:** `src/DirettaSync.cpp:357-370`
+
+**Benefit:** Visibility into target capabilities; warns if MS3 (our default) isn't supported.
+
+---
+
 ## 2026-01-19 - Version 2.0-beta (Jitter Reduction Complete)
 
 All critical jitter reduction optimizations from Phases 1 and 2 are now complete.

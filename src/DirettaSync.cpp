@@ -353,6 +353,21 @@ void DirettaSync::logSinkCapabilities() {
     std::cout << "[DirettaSync]   DSD: " << (info.checkSinkSupportDSD() ? "YES" : "NO") << std::endl;
     std::cout << "[DirettaSync]   DSD LSB: " << (info.checkSinkSupportDSDlsb() ? "YES" : "NO") << std::endl;
     std::cout << "[DirettaSync]   DSD MSB: " << (info.checkSinkSupportDSDmsb() ? "YES" : "NO") << std::endl;
+
+    // SDK 148: Log supported multi-stream modes
+    // supportMSmode is a bitmask: bit0=MS1, bit1=MS2, bit2=MS3
+    uint16_t msmode = info.supportMSmode;
+    std::cout << "[DirettaSync]   MS modes: "
+              << ((msmode & 0x01) ? "MS1 " : "")
+              << ((msmode & 0x02) ? "MS2 " : "")
+              << ((msmode & 0x04) ? "MS3 " : "")
+              << (msmode == 0 ? "(none)" : "")
+              << std::endl;
+
+    // Warn if MS3 (our default) is not supported
+    if (!(msmode & 0x04) && msmode != 0) {
+        std::cerr << "[DirettaSync] WARNING: Target does not support MS3 mode (using MS3 anyway)" << std::endl;
+    }
 }
 
 //=============================================================================
@@ -1335,7 +1350,11 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     }
 
     if (stream.size() != static_cast<size_t>(currentBytesPerBuffer)) {
-        stream.resize(currentBytesPerBuffer);
+        // SDK 148: Use resize_noremap() to avoid reallocation when internal
+        // capacity is sufficient (reduces malloc/free in hot path)
+        if (!stream.resize_noremap(currentBytesPerBuffer)) {
+            stream.resize(currentBytesPerBuffer);  // Fallback if capacity insufficient
+        }
     }
 
     uint8_t* dest = reinterpret_cast<uint8_t*>(stream.get_16());
