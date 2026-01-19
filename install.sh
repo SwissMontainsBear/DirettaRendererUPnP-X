@@ -221,7 +221,7 @@ get_ffmpeg_configure_opts() {
 OPTS
 }
 
-# Minimal FFmpeg 8.x configure options - streamlined audio-only build
+# Minimal FFmpeg 8.x configure options - streamlined audio-only build for renderer
 get_ffmpeg_8_minimal_opts() {
     cat <<'OPTS'
 --prefix=/usr
@@ -231,14 +231,30 @@ get_ffmpeg_8_minimal_opts() {
 --enable-gpl
 --enable-version3
 --enable-gnutls
+--enable-lto
 --disable-everything
 --disable-doc
+--disable-programs
 --disable-avdevice
 --disable-swscale
+--disable-bzlib
+--disable-iconv
+--disable-lzma
+--disable-libxcb
+--disable-libxcb-shm
+--disable-libxcb-shape
+--disable-libxcb-xfixes
+--disable-sdl2
+--disable-xlib
+--disable-libdrm
+--disable-vaapi
+--disable-vdpau
+--disable-v4l2-m2m
+--disable-cuda-llvm
+--disable-alsa
 --enable-protocol=file,http,https,tcp
 --enable-demuxer=flac,wav,dsf,dff,aac,mov
 --enable-decoder=flac,alac,pcm_s16le,pcm_s24le,pcm_s32le,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,aac
---enable-muxer=flac,wav
 --enable-filter=aresample
 OPTS
 }
