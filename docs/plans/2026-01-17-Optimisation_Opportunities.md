@@ -2,7 +2,42 @@
 
 **Date:** 2026-01-17 (updated 2026-01-19)
 **Scope:** Consolidated codebase review and action plan
-**Status:** ✓ ALL CRITICAL OPTIMIZATIONS COMPLETE - Phases 1 & 2 fully implemented
+**Status:** ✓ ALL CRITICAL OPTIMIZATIONS COMPLETE - SDK 148 migration & Phases 1-2 fully implemented
+
+---
+
+## Status Report (2026-01-19)
+
+### Session Summary
+
+This session completed the SDK 148 migration and verified all jitter reduction optimizations:
+
+**SDK 148 Migration:**
+- Fixed `getNewStream()` override signature (`diretta_stream&` vs `DIRETTA::Stream&`)
+- Implemented SDK 148 Stream bypass workaround using persistent `m_streamData` buffer
+- Corrected Makefile and install.sh SDK version references
+
+**Build System Fixes:**
+- Fixed FFmpeg version detection (shell case → Make ifeq conditionals)
+- Improved library detection fallback using ldconfig parsing
+- Separated SDK 147 (-X branch) from SDK 148 (-X-sdk148 branch)
+
+### Implementation Verification
+
+All critical optimizations verified present in codebase:
+
+| Optimization | Location | Verified |
+|--------------|----------|----------|
+| **G1: DSD flow control** | DirettaSync.h:393-423, DirettaRenderer.cpp:263-284 | ✓ |
+| **A1: DSD remainder ring** | AudioEngine.h:138-247 | ✓ |
+| **A2: Resample pre-alloc** | AudioEngine.cpp (fixed 256KB) | ✓ |
+| **A3: Async logging** | DirettaSync.h:35-127 (LogRing) | ✓ |
+| **F1: Worker priority** | DirettaSync.cpp:34-52 (SCHED_FIFO) | ✓ |
+| **P1/C1: Gen counters** | DirettaSync.cpp:1207-1216, 1310-1321 | ✓ |
+| **C1: DSD buffer pre-alloc** | AudioEngine.cpp:413-422 | ✓ |
+| **D2: swr_get_delay cache** | AudioEngine.h:176-178 | ✓ |
+| **G2: Atomic DSD mode** | DirettaSync.h:554 | ✓ |
+| **G4: DSD512 reset delay** | DirettaSync.cpp:506-509 | ✓ |
 
 ---
 
@@ -22,7 +57,7 @@ This document consolidates findings from:
 | Secondary (Track Init) | 5 | 5 | 0 |
 | New Opportunities | 4 | 2 | 2 |
 | New (2026-01-18) | 4 | 4 | 0 |
-| **New (2026-01-19 EE)** | 13 | 9 | 4 |
+| **New (2026-01-19 EE)** | 13 | 11 | 2 |
 | **New (2026-01-19 Expert Pass)** | 6 | 5 | 1 |
 
 **Key Achievement:** G1 (DSD blocking sleep) - 50× jitter reduction (±2.5ms → ±50µs)
@@ -1488,6 +1523,63 @@ After each optimisation, re-measure to validate impact.
 - S3, S5: Maintainability improvements
 - N2: Raw PCM fast path (future enhancement)
 - G6: DSD1024 MIN_SAMPLES (future compatibility)
+
+---
+
+## Appendix D: 2026-01-19 Fresh EE/SE Analysis
+
+### Electrical Engineering Perspective
+
+**Signal Integrity Assessment:**
+The codebase demonstrates excellent signal path design:
+
+1. **Timing Determinism**: The G1 condition variable implementation reduces DSD send jitter from ±2.5ms to ±50µs. The `try_lock()` pattern in `getNewStream()` ensures the consumer thread is never blocked by the flow control notification.
+
+2. **Clock Domain Handling**: Format transitions between clock families (44.1kHz vs 48kHz) use scaled reset delays (`200 * dsdMultiplier` ms) to allow complete pipeline flush. This is critical for I2S targets.
+
+3. **Buffer Dimensioning**: The `calculateDsdSamplesPerCall()` function targets consistent ~12ms chunks across all DSD rates, maintaining uniform scheduling granularity from DSD64 to DSD1024.
+
+4. **Silence Handling**: DSD silence (0x69) vs PCM silence (0x00) is properly tracked via atomic `silenceByte_` with correct acquire/release ordering.
+
+**Potential Future Enhancement (EE perspective):**
+- F2 (CPU affinity): Thread migration between cores causes L1/L2 cache invalidation. For lowest jitter systems, pinning the worker thread to a dedicated core could eliminate this variance.
+
+### Software Engineering Perspective
+
+**Concurrency Analysis:**
+The codebase uses a well-designed layered synchronization model:
+
+1. **Lock-Free Hot Path**: The SPSC ring buffer (`DirettaRingBuffer`) uses acquire/release semantics with no locks in the hot path. The `RingAccessGuard` provides safe access during reconfiguration without mutex contention.
+
+2. **Generation Counter Pattern**: Both producer (`m_formatGeneration`) and consumer (`m_consumerStateGen`) use generation counters to reduce atomic loads from 12 to 2 per audio cycle. This is a textbook optimization for stable state.
+
+3. **Condition Variable Design**: The G1 flow control uses a hybrid approach:
+   - Producer waits with 500µs timeout (not indefinite)
+   - Consumer uses `try_lock()` to avoid blocking time-critical thread
+   - Spurious wakeups are handled by the retry loop structure
+
+4. **Memory Ordering Audit**: All atomic operations use appropriate ordering:
+   - Diagnostic counters: `relaxed` (correctness not affected by ordering)
+   - State flags: `acquire`/`release` pairs
+   - Generation counters: `release` on write, `acquire` on read
+
+**Code Quality Observations:**
+- The SDK 148 Stream bypass (`m_streamData` persistent buffer) is a pragmatic workaround for corrupted SDK state after Stop→Play transitions.
+- The `ReconfigureGuard` RAII pattern ensures proper begin/end reconfigure bracketing.
+- The `interruptibleWait()` helper allows format transition delays to be interrupted on shutdown.
+
+### Remaining Low-Priority Items
+
+| ID | Issue | Type | Effort | Risk |
+|----|-------|------|--------|------|
+| G6 | DSD1024 MIN_SAMPLES | Future-proofing | Low | Very Low |
+| N4 | SIMD memcpy for fixed sizes | Performance | Medium | Low |
+| N6 | S24 timeout scaling by rate | Edge case | Low | Very Low |
+| S3 | Format transition refactor | Maintainability | High | Low |
+| S5 | DSD diagnostics compile flag | Maintainability | Trivial | Very Low |
+| N2 | Raw PCM fast path | Performance | High | Medium |
+
+**Recommendation:** These items can be addressed incrementally as needed. The codebase is in excellent shape for production use.
 
 ---
 
