@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-01-19 - Version 2.0-beta (Correctness Fixes)
+
+Correctness fixes identified through expert analysis pass (EE + SE perspectives).
+
+### G3: Non-Atomic Store Fix
+
+**Problem:** Assignment to `std::atomic` variable without using atomic operation.
+
+**Location:** `src/DirettaSync.cpp:1338`
+
+**Before:**
+```cpp
+m_stabilizationCount = 0;  // Plain assignment - undefined behavior
+```
+
+**After:**
+```cpp
+m_stabilizationCount.store(0, std::memory_order_relaxed);
+```
+
+**Impact:** Fixes potential undefined behavior on ARM (Raspberry Pi) platforms.
+
+**Bonus:** Also changed `fetch_add` from `acq_rel` to `relaxed` for this diagnostic counter (B1 optimization).
+
+---
+
+### G2: DSD Conversion Mode Race Condition Fix
+
+**Problem:** `m_dsdConversionMode` was a plain enum accessed from multiple threads without synchronization.
+
+**Location:** `src/DirettaSync.h:416`, `src/DirettaSync.cpp` (multiple locations)
+
+**Before:**
+```cpp
+DirettaRingBuffer::DSDConversionMode m_dsdConversionMode{...};  // Plain enum
+m_dsdConversionMode = mode;  // Plain assignment
+```
+
+**After:**
+```cpp
+std::atomic<DirettaRingBuffer::DSDConversionMode> m_dsdConversionMode{...};
+m_dsdConversionMode.store(mode, std::memory_order_release);
+// ... and .load() with appropriate ordering for reads
+```
+
+**Impact:** Eliminates potential race condition between producer (configureSinkDSD) and consumer (sendAudio) threads.
+
+---
+
+### G5: silenceByte_ Memory Ordering (Verified OK)
+
+**Analysis:** Verified that existing implementation is already correct:
+- Setter uses `memory_order_release`
+- Getter uses `memory_order_acquire`
+- Internal use in `fillWithSilence()` uses `relaxed` (acceptable - same thread)
+
+**No changes required.**
+
+---
+
+### Version Bump
+
+- Changed `RENDERER_VERSION` from `"1.2.0-simplified"` to `"2.0-beta"`
+- **File:** `src/main.cpp:14`
+
+---
+
+### Documentation
+
+- Added Phase 2 jitter reduction design: `docs/plans/2026-01-19-jitter-reduction-phase2-design.md`
+- Added Phase 2 jitter reduction implementation guide: `docs/plans/2026-01-19-jitter-reduction-phase2-impl.md`
+- Updated `docs/plans/2026-01-17-Optimisation_Opportunities.md` with expert analysis findings
+
+---
+
 ## 2026-01-19 - FFmpeg Version Mismatch Detection
 
 ### Problem
