@@ -11,7 +11,11 @@
 // Logging system - Variable globale définie dans main.cpp
 // ============================================================================
 extern bool g_verbose;
+#ifdef NOLOG
+#define DEBUG_LOG(x) do {} while(0)
+#else
 #define DEBUG_LOG(x) if (g_verbose) { std::cout << x << std::endl; }
+#endif
 
 UPnPDevice::UPnPDevice(const Config& config)
     : m_config(config)

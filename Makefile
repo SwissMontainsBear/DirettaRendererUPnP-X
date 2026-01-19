@@ -123,6 +123,8 @@ endif
 
 ifdef NOLOG
     NOLOG_SUFFIX = -nolog
+    CXXFLAGS += -DNOLOG
+    $(info Logging: DISABLED (production build))
 else
     NOLOG_SUFFIX =
 endif
@@ -284,7 +286,7 @@ ifneq ($(FFMPEG_HEADER_VERSION),$(FFMPEG_LIB_VERSION))
         ifneq ($(FFMPEG_LIB_VERSION),unknown)
 $(info )
 $(info ╔══════════════════════════════════════════════════════════════════╗)
-$(info ║  WARNING: FFmpeg VERSION MISMATCH DETECTED!                      ║)
+$(info ║  ⚠️  WARNING: FFmpeg VERSION MISMATCH DETECTED!                   ║)
 $(info ║                                                                  ║)
 $(info ║  Headers:  libavformat $(FFMPEG_HEADER_VERSION) (FFmpeg $(FFMPEG_HEADER_FFVERSION))                           ║)
 $(info ║  Library:  libavformat $(FFMPEG_LIB_VERSION) (FFmpeg $(FFMPEG_LIB_FFVERSION))                           ║)

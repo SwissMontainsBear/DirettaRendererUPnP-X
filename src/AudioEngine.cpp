@@ -17,7 +17,11 @@ extern "C" {
 // Logging system - Variable globale définie dans main.cpp
 // ============================================================================
 extern bool g_verbose;
+#ifdef NOLOG
+#define DEBUG_LOG(x) do {} while(0)
+#else
 #define DEBUG_LOG(x) if (g_verbose) { std::cout << x << std::endl; }
+#endif
 #include <libavutil/opt.h>
 }
 
@@ -80,7 +84,8 @@ AudioDecoder::AudioDecoder()
     , m_rawDSD(false)         // DSD mode off by default
     , m_packet(nullptr)       // Reusable packet for raw reading
     , m_frame(nullptr)        // Reusable frame for PCM decoding
-    , m_dsdRemainderCount(0)  // DSD packet fragment counter
+    , m_dsdRemainderReadPos(0)   // DSD remainder ring read position
+    , m_dsdRemainderWritePos(0)  // DSD remainder ring write position
     , m_pcmFifo(nullptr)      // PCM overflow FIFO
     , m_resampleBufferCapacity(0)
     , m_bypassMode(false)     // PCM bypass disabled by default
@@ -405,6 +410,17 @@ bool AudioDecoder::open(const std::string& url) {
 
             m_eof = false;
 
+            // C1: Pre-allocate DSD buffers at track open to avoid first-frame allocation
+            // Size based on MAX_DSD_SAMPLES (131072) / 8 = 16384 bytes per channel
+            // Use 32KB to have headroom for any chunk size
+            static constexpr size_t DSD_BUFFER_PREALLOC = 32768;
+            if (m_dsdBufferCapacity < DSD_BUFFER_PREALLOC) {
+                m_dsdLeftBuffer.resize(DSD_BUFFER_PREALLOC);
+                m_dsdRightBuffer.resize(DSD_BUFFER_PREALLOC);
+                m_dsdBufferCapacity = DSD_BUFFER_PREALLOC;
+                DEBUG_LOG("[AudioDecoder] Pre-allocated DSD buffers: " << DSD_BUFFER_PREALLOC << " bytes/channel");
+            }
+
             std::cout << "[AudioDecoder] Opened successfully (DSD NATIVE)" << std::endl;
 
             return true;  // Exit early - no codec opening needed!
@@ -566,9 +582,11 @@ void AudioDecoder::close() {
     m_rawDSD = false;
     m_resampleBufferCapacity = 0;  // Reset capacity tracking
     m_dsdBufferCapacity = 0;       // Reset DSD buffer capacity tracking
-    m_dsdRemainderCount = 0;       // Reset DSD packet remainder
+    dsdRemainderClear();           // Reset DSD packet remainder ring
     m_bypassMode = false;          // Reset PCM bypass mode
     m_resamplerInitialized = false;
+    m_cachedResamplerDelay = 0;    // D2: Reset cached delay
+    m_delayRefreshCounter = 0;
 }
 
 size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
@@ -605,28 +623,15 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
             buffer.resize(totalBytesNeeded);
         }
 
-        // Use remaining data from previous DSD packet reads
-        if (m_dsdRemainderCount > 0) {
-            size_t remainingPerCh = m_dsdRemainderCount / 2;
-            size_t toUse = std::min(remainingPerCh, bytesPerChannelNeeded);
-
-            memcpy(leftData + leftOffset, m_dsdPacketRemainder.data(), toUse);
-            leftOffset += toUse;
-            memcpy(rightData + rightOffset, m_dsdPacketRemainder.data() + remainingPerCh, toUse);
-            rightOffset += toUse;
-
-            if (toUse < remainingPerCh) {
-                size_t leftover = remainingPerCh - toUse;
-                memmove(m_dsdPacketRemainder.data(),
-                        m_dsdPacketRemainder.data() + toUse,
-                        leftover);
-                memmove(m_dsdPacketRemainder.data() + leftover,
-                        m_dsdPacketRemainder.data() + remainingPerCh + toUse,
-                        leftover);
-                m_dsdRemainderCount = leftover * 2;
-            } else {
-                m_dsdRemainderCount = 0;
-            }
+        // Use remaining data from previous DSD packet reads (O(1) ring buffer)
+        size_t remainderAvail = dsdRemainderAvailable();
+        if (remainderAvail > 0) {
+            size_t toUse = std::min(remainderAvail, bytesPerChannelNeeded);
+            size_t popped = dsdRemainderPop(leftData + leftOffset,
+                                            rightData + rightOffset,
+                                            toUse);
+            leftOffset += popped;
+            rightOffset += popped;
         }
 
         // Read packets until we have enough data
@@ -675,15 +680,10 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
                 printf("\n");
             }
 
-            // Save DSD packet excess
+            // Save DSD packet excess (O(1) ring buffer push)
             if (toTake < blockSize) {
                 size_t excess = blockSize - toTake;
-                if (m_dsdPacketRemainder.size() < excess * 2) {
-                    m_dsdPacketRemainder.resize(excess * 2);
-                }
-                memcpy_audio(m_dsdPacketRemainder.data(), pktL + toTake, excess);
-                memcpy_audio(m_dsdPacketRemainder.data() + excess, pktR + toTake, excess);
-                m_dsdRemainderCount = excess * 2;
+                dsdRemainderPush(pktL + toTake, pktR + toTake, excess);
             }
 
             av_packet_unref(m_packet);
@@ -730,7 +730,9 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
     }
 
     // Initialize resampler if needed (not for DSD)
-    if (!m_trackInfo.isDSD && !m_swrContext) {
+    // Check m_resamplerInitialized instead of m_swrContext because
+    // bypass mode doesn't use swrContext but still counts as initialized
+    if (!m_trackInfo.isDSD && !m_resamplerInitialized) {
         if (!initResampler(outputRate, outputBits)) {
             return 0;
         }
@@ -879,6 +881,29 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
                 // PCM: Resample if needed, or bypass for bit-perfect playback
                 size_t samplesNeeded = numSamples - totalSamplesRead;
 
+                // Check for bypass format mismatch (canBypass checked codec context,
+                // but actual frame format could differ at runtime)
+                if (m_bypassMode) {
+                    AVSampleFormat expectedFmt = (outputBits == 16) ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32;
+                    AVSampleFormat frameFmt = (AVSampleFormat)m_frame->format;
+                    bool formatMismatch = (frameFmt != expectedFmt);
+                    bool isPlanar = av_sample_fmt_is_planar(frameFmt);
+
+                    if (formatMismatch || isPlanar) {
+                        std::cerr << "[AudioDecoder] BYPASS MISMATCH: frame format "
+                                  << av_get_sample_fmt_name(frameFmt)
+                                  << (isPlanar ? " (PLANAR)" : "")
+                                  << " != expected " << av_get_sample_fmt_name(expectedFmt)
+                                  << " - falling back to resampler" << std::endl;
+                        // Disable bypass and reinitialize resampler
+                        m_bypassMode = false;
+                        m_resamplerInitialized = false;
+                        if (!initResampler(outputRate, outputBits)) {
+                            return totalSamplesRead;
+                        }
+                    }
+                }
+
                 if (m_bypassMode) {
                     // BYPASS PATH: Direct copy from decoded frame (bit-perfect)
                     size_t samplesToCopy = std::min(frameSamples, samplesNeeded);
@@ -900,9 +925,16 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
                         }
                     }
                 } else if (m_swrContext) {
+                    // D2: Use cached resampler delay (refreshed every DELAY_REFRESH_INTERVAL frames)
+                    // swr_get_delay() stabilizes quickly - no need to call every frame
+                    if (++m_delayRefreshCounter >= DELAY_REFRESH_INTERVAL) {
+                        m_cachedResamplerDelay = swr_get_delay(m_swrContext, m_codecContext->sample_rate);
+                        m_delayRefreshCounter = 0;
+                    }
+
                     // Calculate TOTAL output samples (without limiting)
                     int64_t totalOutSamples = av_rescale_rnd(
-                        swr_get_delay(m_swrContext, m_codecContext->sample_rate) + frameSamples,
+                        m_cachedResamplerDelay + frameSamples,
                         outputRate,
                         m_codecContext->sample_rate,
                         AV_ROUND_UP
@@ -911,7 +943,12 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
                     // Reuse member buffer with capacity growth (eliminates per-call allocation)
                     size_t tempBufferSize = totalOutSamples * bytesPerSample;
                     if (tempBufferSize > m_resampleBufferCapacity) {
-                        // Grow with 50% headroom to reduce future reallocations
+                        // Should not happen with pre-allocated 256KB buffer
+                        // Log warning but don't block - fall back to dynamic allocation
+                        DEBUG_LOG("[AudioDecoder] WARNING: Resampler buffer insufficient: "
+                                  << tempBufferSize << " > " << m_resampleBufferCapacity
+                                  << " - pre-allocation may need increase");
+                        // Fall back to dynamic allocation only if absolutely necessary
                         size_t newCapacity = static_cast<size_t>(tempBufferSize * 1.5);
                         m_resampleBuffer.resize(newCapacity);
                         m_resampleBufferCapacity = m_resampleBuffer.size();
@@ -1014,7 +1051,9 @@ bool AudioDecoder::initResampler(uint32_t outputRate, uint32_t outputBits) {
 
     // Check if we can bypass resampling entirely (bit-perfect path)
     if (canBypass(outputRate, outputBits)) {
-        std::cout << "[AudioDecoder] PCM BYPASS enabled - bit-perfect path" << std::endl;
+        std::cout << "[AudioDecoder] PCM BYPASS enabled - bit-perfect path ("
+                  << av_get_sample_fmt_name(m_codecContext->sample_fmt) << "/"
+                  << outputRate << "Hz/" << outputBits << "bit)" << std::endl;
 
         // Free existing resampler if any
         if (m_swrContext) {
@@ -1105,6 +1144,19 @@ bool AudioDecoder::initResampler(uint32_t outputRate, uint32_t outputBits) {
               << "Hz -> " << outputRate << "Hz, " << outputBits << "bit"
               << " (FIFO: " << fifoSize << " samples)" << std::endl;
 
+    // Pre-allocate resampler buffer to fixed capacity (eliminates hot-path allocation)
+    // 256KB covers up to 768kHz/32-bit stereo with headroom
+    static constexpr size_t RESAMPLER_BUFFER_CAPACITY = 262144;
+    if (m_resampleBuffer.size() < RESAMPLER_BUFFER_CAPACITY) {
+        m_resampleBuffer.resize(RESAMPLER_BUFFER_CAPACITY);
+        m_resampleBufferCapacity = RESAMPLER_BUFFER_CAPACITY;
+        DEBUG_LOG("[AudioDecoder] Pre-allocated resampler buffer: " << RESAMPLER_BUFFER_CAPACITY << " bytes");
+    }
+
+    // D2: Initialize cached delay (will be refreshed periodically in readSamples)
+    m_cachedResamplerDelay = swr_get_delay(m_swrContext, m_codecContext->sample_rate);
+    m_delayRefreshCounter = 0;
+
     m_resamplerInitialized = true;
     return true;
 }
@@ -1154,6 +1206,15 @@ bool AudioDecoder::canBypass(uint32_t outputRate, uint32_t outputBits) const {
 
     // Format must be packed integer (NOT planar, NOT float)
     AVSampleFormat fmt = m_codecContext->sample_fmt;
+
+    // Explicit planar check - planar formats would cause "accelerated" playback
+    // because data[0] would only contain one channel
+    if (av_sample_fmt_is_planar(fmt)) {
+        DEBUG_LOG("[AudioDecoder] canBypass: NO (planar format " << av_get_sample_fmt_name(fmt)
+                  << " requires interleaving)");
+        return false;
+    }
+
     bool isPackedInteger = (fmt == AV_SAMPLE_FMT_S16 || fmt == AV_SAMPLE_FMT_S32);
 
     if (!isPackedInteger) {
@@ -1754,7 +1815,7 @@ bool AudioDecoder::seek(double seconds) {
         }
 
         // Clear stale DSD buffered data from before the seek
-        m_dsdRemainderCount = 0;
+        dsdRemainderClear();
         m_eof = false;
 
         // Reset packet counter for cleaner debug output
@@ -1878,7 +1939,7 @@ bool AudioEngine::seek(const std::string& timeStr) {
     double totalSeconds = hours * 3600.0 + minutes * 60.0 + seconds;
 
     DEBUG_LOG("[AudioEngine] Parsed time: " << timeStr
-              << " = " << totalSeconds << " seconds")
+              << " = " << totalSeconds << " seconds");
 
     return seek(totalSeconds);
 }
