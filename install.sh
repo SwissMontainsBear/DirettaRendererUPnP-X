@@ -335,8 +335,8 @@ build_ffmpeg_8_minimal() {
     local configure_opts
     configure_opts=$(get_ffmpeg_8_minimal_opts | tr '\n' ' ')
 
-    # Run configure
-    ./configure $configure_opts
+    # Run configure (eval needed for quoted flags like --extra-cflags)
+    eval "./configure $configure_opts"
 
     print_info "Building FFmpeg (this may take a while)..."
     make -j$(nproc)
