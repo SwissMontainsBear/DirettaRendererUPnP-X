@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-01-20 - FFmpeg Ultra-Minimal Build Optimization
+
+### FFmpeg Build Improvements (thanks to @leeeanh)
+
+Based on leeeanh's research showing that aggressive FFmpeg minimization improves audio transparency.
+
+**New build flags added:**
+| Flag | Purpose |
+|------|---------|
+| `--disable-autodetect` | Deterministic build |
+| `--disable-debug` | Remove debug code |
+| `--disable-logging` | Remove FFmpeg internal logging |
+| `--enable-stripping` | Strip symbols from binaries |
+| `--extra-cflags=-ffunction-sections -fdata-sections` | Dead code elimination |
+| `--extra-ldflags=-Wl,--gc-sections -Wl,--as-needed` | Link-time optimization |
+
+**Retained for full renderer functionality:**
+- All audio decoders (FLAC, ALAC, PCM, DSD, AAC)
+- All demuxers (FLAC, WAV, DSF, DFF, AAC, MOV)
+- HTTPS support (gnutls)
+- Resampling filter (aresample)
+
+**Files:** `install.sh`
+
+**To apply:** Rebuild FFmpeg with `./install.sh` option 3.
+
+---
+
+### FFmpeg Library Detection Fix (Debian)
+
+**Problem:** After FFmpeg 8.x build on Debian, library detection failed with `[MISSING]` for all libraries, even though they were installed correctly.
+
+**Root cause:** Debian multi-arch systems may not include `/usr/lib` in the default ldconfig search path.
+
+**Solution:**
+1. Create `/etc/ld.so.conf.d/ffmpeg-usr.conf` with `/usr/lib` path after FFmpeg install
+2. Force `ldconfig` refresh before testing
+3. Add fallback: check common library paths directly if ldconfig cache misses
+
+**Paths checked:** `/usr/lib`, `/usr/lib64`, `/usr/local/lib`, `/usr/lib/x86_64-linux-gnu`, `/usr/lib/aarch64-linux-gnu`
+
+**Files:** `install.sh`
+
+---
+
+### SDK 148 Alternative Implementation Reference
+
+Added documentation for alternative `getNewStream()` memory management approaches in case issues emerge in the future.
+
+**Options documented:**
+- **Double-buffer pattern** - Alternate between two buffers for extra safety
+- **Pre-allocate maximum size** - Never reallocate (simplest fix)
+- **Resize only when disconnected** - Conservative approach
+
+**Current implementation is working correctly** per SDK contract.
+
+**Files:** `docs/sdk148_alternative_implementation.md`
+
+---
+
+### Optimization Status Report Update
+
+Updated `docs/plans/2026-01-17-Optimisation_Opportunities.md` with:
+- SDK 148 migration completion summary
+- Verification of all critical optimizations (G1, A1-A3, F1, P1/C1)
+- Fresh EE/SE analysis in Appendix D
+- Remaining low-priority items
+
+**All critical optimizations verified complete.**
+
+---
+
 ## 2026-01-19 - SDK 148 Complete Solution: Stream Class Bypass
 
 ### Problem
