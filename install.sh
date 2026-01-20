@@ -263,8 +263,8 @@ get_ffmpeg_8_minimal_opts() {
 --enable-demuxer=flac,wav,dsf,dff,aac,mov
 --enable-decoder=flac,alac,pcm_s16le,pcm_s24le,pcm_s32le,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,aac
 --enable-filter=aresample
---extra-cflags=-ffunction-sections -fdata-sections
---extra-ldflags=-Wl,--gc-sections -Wl,--as-needed
+--extra-cflags="-ffunction-sections -fdata-sections"
+--extra-ldflags="-Wl,--gc-sections -Wl,--as-needed"
 OPTS
 }
 
