@@ -223,6 +223,9 @@ OPTS
 
 # Minimal FFmpeg 8.x configure options - streamlined audio-only build for renderer
 get_ffmpeg_8_minimal_opts() {
+    # Ultra-minimal audio-only build with aggressive optimizations
+    # Based on leeeanh's research: --disable-logging and linker optimizations
+    # significantly improve audio transparency
     cat <<'OPTS'
 --prefix=/usr
 --enable-shared
@@ -232,6 +235,10 @@ get_ffmpeg_8_minimal_opts() {
 --enable-version3
 --enable-gnutls
 --enable-lto
+--enable-stripping
+--disable-autodetect
+--disable-debug
+--disable-logging
 --disable-everything
 --disable-doc
 --disable-programs
@@ -256,6 +263,8 @@ get_ffmpeg_8_minimal_opts() {
 --enable-demuxer=flac,wav,dsf,dff,aac,mov
 --enable-decoder=flac,alac,pcm_s16le,pcm_s24le,pcm_s32le,dsd_lsbf,dsd_msbf,dsd_lsbf_planar,dsd_msbf_planar,aac
 --enable-filter=aresample
+--extra-cflags=-ffunction-sections -fdata-sections
+--extra-ldflags=-Wl,--gc-sections -Wl,--as-needed
 OPTS
 }
 
