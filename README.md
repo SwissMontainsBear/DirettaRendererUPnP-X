@@ -13,6 +13,12 @@
 
 ---
 
+## ⚠️ NETWORK REQUIREMENTS
+
+> **This build is for highly optimized audio. It does not support MTU lower than 9000. Please adapt network topology and hardware accordingly (jumbo frames required).**
+
+---
+
 ## ⚠️ IMPORTANT DISCLAIMERS
 
 ### No Support Provided
