@@ -16,6 +16,8 @@
 ## ⚠️ NETWORK REQUIREMENTS
 
 > **This build is for highly optimized audio. It does not support MTU lower than 9000. Please adapt network topology and hardware accordingly (jumbo frames required).**
+>
+> **MSMODE3 of Diretta requires administrator privileges in order to alter network behaviour. Please launch the executable with such privileges.**
 
 ---
 
