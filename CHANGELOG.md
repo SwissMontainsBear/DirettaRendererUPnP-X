@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-01-25 - Build Fix: x86-64-v2 Compilation (AVX2 Fallback)
+
+### Problem
+
+Compilation failed on x86-64-v2 builds with error:
+```
+inlining failed in call to 'always_inline' '_mm256_storeu_si256': target specific option mismatch
+```
+
+**Cause:** `FastMemcpy_Audio.h` uses AVX2 intrinsics (`_mm256_*`), but x86-64-v2 builds don't include `-mavx2` flag.
+
+### Solution
+
+Added `#ifdef __AVX2__` guard in `memcpyfast_audio.h` to conditionally include AVX2 code.
+
+| Build | Result |
+|-------|--------|
+| x86-64-v3, v4, zen4 | Uses AVX2/AVX512 optimized code (unchanged) |
+| x86-64-v2 | Falls back to `std::memcpy` (glibc optimized) |
+| ARM64 | Falls back to `std::memcpy` (unchanged) |
+
+### Files Changed
+
+- `src/memcpyfast_audio.h` - Changed `#ifdef MEMCPY_AUDIO_X86` to `#if defined(MEMCPY_AUDIO_X86) && defined(__AVX2__)`
+
+### Impact
+
+No performance impact on v3/v4/zen4 builds. The v2 fallback uses glibc's optimized memcpy which is still efficient for audio buffer sizes.
+
+---
+
 ## 2026-01-25 - Bug Fix: 16-bit Audio Segfault on 24-bit-only Sinks
 
 ### Problem

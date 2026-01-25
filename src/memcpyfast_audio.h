@@ -16,16 +16,18 @@
     #define MEMCPY_AUDIO_ARM64 1
 #endif
 
-#ifdef MEMCPY_AUDIO_X86
+//---------------------------------------------------------------------
+// x86 with AVX2: Use optimized SIMD memcpy
+//---------------------------------------------------------------------
+#if defined(MEMCPY_AUDIO_X86) && defined(__AVX2__)
+
 #include "FastMemcpy_Audio.h"
 #include <immintrin.h>
 
 #ifdef __AVX512F__
 #include "FastMemcpy_Audio_AVX512.h"
 #endif
-#endif // MEMCPY_AUDIO_X86
 
-#ifdef MEMCPY_AUDIO_X86
 //---------------------------------------------------------------------
 // Runtime CPU feature detection (x86 only)
 //---------------------------------------------------------------------
@@ -48,9 +50,7 @@ static inline int detect_avx512(void) {
     }
     return g_has_avx512;
 }
-#endif // MEMCPY_AUDIO_X86
 
-#ifdef MEMCPY_AUDIO_X86
 /**
  * Consistent-timing memcpy for audio buffers (128-4096 bytes)
  * Uses overlapping stores for tail handling to eliminate timing variance
@@ -161,15 +161,16 @@ static inline void* memcpy_audio(void *dst, const void *src, size_t len) {
     return memcpy_audio_fast(dst, src, len);
 }
 
-#else // !MEMCPY_AUDIO_X86 (ARM64 and other platforms)
+#else // !AVX2 (ARM64, x86 without AVX2, and other platforms)
 
 //---------------------------------------------------------------------
-// ARM64 / Fallback implementation
-// Uses standard memcpy - still fast on ARM64 due to NEON auto-vectorization
+// Fallback implementation using standard memcpy
+// - ARM64: Fast due to NEON auto-vectorization by GCC/Clang
+// - x86 without AVX2: Falls back to optimized glibc memcpy
 //---------------------------------------------------------------------
 
 /**
- * Prefetch audio buffer (no-op on non-x86, compiler may auto-prefetch)
+ * Prefetch audio buffer (no-op on non-AVX2, compiler may auto-prefetch)
  */
 static inline void prefetch_audio_buffer(const void* src, size_t size) {
     (void)src;
@@ -178,8 +179,9 @@ static inline void prefetch_audio_buffer(const void* src, size_t size) {
 }
 
 /**
- * Audio memcpy - uses standard memcpy on ARM64
+ * Audio memcpy - uses standard memcpy
  * GCC/Clang will auto-vectorize with NEON on ARM64
+ * On x86 without AVX2, glibc memcpy is already well-optimized
  */
 static inline void* memcpy_audio(void *dst, const void *src, size_t len) {
 #ifndef NDEBUG
@@ -195,12 +197,12 @@ static inline void* memcpy_audio(void *dst, const void *src, size_t len) {
 }
 
 /**
- * Fixed-timing memcpy - uses standard memcpy on ARM64
+ * Fixed-timing memcpy - uses standard memcpy on non-AVX2 platforms
  */
 static inline void memcpy_audio_fixed(void* dst, const void* src, size_t size) {
     std::memcpy(dst, src, size);
 }
 
-#endif // MEMCPY_AUDIO_X86
+#endif // MEMCPY_AUDIO_X86 && __AVX2__
 
 #endif // __MEMCPYFAST_AUDIO_H__
