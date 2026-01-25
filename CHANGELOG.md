@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-01-25 - Bug Fix: 16-bit Audio Segfault on 24-bit-only Sinks
+
+### Problem
+
+Segmentation fault when playing 16-bit audio files on Diretta targets that only support 24-bit PCM (not 32-bit).
+
+**Symptom:** Crash immediately after "PCM prefill complete" message when playing 16-bit FLAC/WAV files.
+
+**Root cause:** Missing conversion path for 16-bit input to 24-bit sink. The code calculated `bytesPerFrame` using the sink's 3 bytes per sample, but the input buffer only had 2 bytes per sample, causing a buffer overrun.
+
+```
+Input: 2048 samples × 4 bytes (16-bit stereo) = 8192 bytes
+Code tried to read: 2048 samples × 6 bytes (24-bit stereo) = 12288 bytes
+Result: 4096 bytes read past buffer end → SEGFAULT
+```
+
+### Solution
+
+Added complete 16-bit to 24-bit conversion path:
+
+| Component | Change |
+|-----------|--------|
+| `DirettaSync.h` | Added `m_need16To24Upsample` atomic flag and cached value |
+| `DirettaRingBuffer.h` | Added `push16To24()` and `convert16To24()` functions |
+| `DirettaSync.cpp` | Added flag initialization, configuration, and dispatch path |
+
+**Conversion logic:** 16-bit sample placed in upper bits of 24-bit output with zero-padded LSB:
+```cpp
+dst[0] = 0x00;           // padding (LSB)
+dst[1] = src[i*2 + 0];   // 16-bit LSB
+dst[2] = src[i*2 + 1];   // 16-bit MSB
+```
+
+### Files Changed
+
+- `src/DirettaSync.h` - Added `m_need16To24Upsample`, `m_cachedUpsample16to24`
+- `src/DirettaRingBuffer.h` - Added `push16To24()`, `convert16To24()` (both AVX2 and scalar versions)
+- `src/DirettaSync.cpp` - Flag initialization in `fullReset()`, `configureRingPCM()`, `configureSinkDSD()`; dispatch in `sendAudio()`
+
+### Affected Configurations
+
+Only affects systems where:
+1. Input audio is 16-bit (e.g., CD-quality FLAC)
+2. Diretta target only supports 24-bit PCM (not 32-bit)
+
+Systems with 32-bit capable targets were unaffected (used existing `push16To32` path).
+
+---
+
 ## 2026-01-20 - FFmpeg Ultra-Minimal Build Optimization
 
 ### FFmpeg Build Improvements (thanks to @leeeanh)
