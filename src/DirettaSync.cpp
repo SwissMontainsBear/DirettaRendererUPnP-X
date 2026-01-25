@@ -1400,7 +1400,7 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
 
             // Calculate cycle time based on MTU and data rate
             // cycleTime = (efficientMTU / bytesPerSecond) in microseconds
-            int efficientMTU = static_cast<int>(m_effectiveMTU) - 24;  // Subtract overhead
+            int efficientMTU = static_cast<int>(m_effectiveMTU) - DirettaCycleCalculator::OVERHEAD;
             double bytesPerSecond = static_cast<double>(currentSampleRate) * 2 / 8.0;  // 2ch, 1bit
             double cycleTimeUs = (static_cast<double>(efficientMTU) / bytesPerSecond) * 1000000.0;
 

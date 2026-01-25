@@ -249,7 +249,7 @@ namespace DirettaBuffer {
 
 class DirettaCycleCalculator {
 public:
-    static constexpr int OVERHEAD = 24;
+    static constexpr int OVERHEAD = 48;  // IPv6: 40 (IP header) + 8 (UDP header)
 
     explicit DirettaCycleCalculator(uint32_t mtu = 1500)
         : m_mtu(mtu), m_efficientMTU(mtu - OVERHEAD) {}
