@@ -88,6 +88,10 @@ endif
 DIRETTA_ARCH = $(word 1,$(subst -, ,$(FULL_VARIANT)))
 
 ifeq ($(DIRETTA_ARCH),x64)
+    # Suppress intentional fall-through warnings in FastMemcpy_Avx.h
+    CXXFLAGS += -Wno-implicit-fallthrough
+    CFLAGS += -Wno-implicit-fallthrough
+
     # Zen4: Full microarchitecture optimization (-march=znver4)
     # Includes: AVX-512, optimized scheduling, cache hints, branch prediction
     ifneq (,$(findstring zen4,$(FULL_VARIANT)))
@@ -334,7 +338,7 @@ INCLUDES = \
     -I/usr/local/include \
     -I. \
     -Isrc \
-    -I$(SDK_PATH)/Host
+    -isystem $(SDK_PATH)/Host
 
 LDFLAGS += \
     $(FFMPEG_LDFLAGS) \
