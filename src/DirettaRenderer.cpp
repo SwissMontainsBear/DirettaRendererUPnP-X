@@ -562,15 +562,33 @@ void DirettaRenderer::upnpThreadFunc() {
     DEBUG_LOG("[UPnP Thread] Stopped");
 }
 
+size_t DirettaRenderer::selectChunkSize(uint32_t sampleRate, bool isDSD) const {
+    // DSD: Use rate-adaptive calculation for consistent ~12ms chunks
+    if (isDSD) {
+        return DirettaBuffer::calculateDsdSamplesPerCall(sampleRate);
+    }
+
+    // PCM: Quantized chunk sizes for predictable timing
+    // Larger chunks at higher rates maintain consistent ~46ms periods
+    if (sampleRate <= 48000) {
+        return 2048;   // ~46ms at 44.1kHz, ~43ms at 48kHz
+    } else if (sampleRate <= 96000) {
+        return 4096;   // ~46ms at 88.2kHz, ~43ms at 96kHz
+    } else {
+        return 8192;   // ~46ms at 176.4kHz, ~43ms at 192kHz
+    }
+}
+
 void DirettaRenderer::audioThreadFunc() {
     DEBUG_LOG("[Audio Thread] Started");
 
-    // Buffer-level flow control thresholds (like MPD's Delay() approach)
-    constexpr float BUFFER_HIGH_THRESHOLD = 0.5f;  // Throttle when >50% full
-    constexpr float BUFFER_LOW_THRESHOLD = 0.25f;  // Warn when <25% full
+    using Clock = std::chrono::steady_clock;
 
+    Clock::time_point nextWake = Clock::now();
+    size_t currentChunk = 0;
     uint32_t lastSampleRate = 0;
-    size_t currentSamplesPerCall = 8192;
+    bool lastIsDSD = false;
+    std::chrono::microseconds period{0};
 
     while (m_running) {
         if (!m_audioEngine) {
@@ -580,61 +598,61 @@ void DirettaRenderer::audioThreadFunc() {
 
         auto state = m_audioEngine->getState();
 
-        if (state == AudioEngine::State::PLAYING) {
-            const auto& trackInfo = m_audioEngine->getCurrentTrackInfo();
-            uint32_t sampleRate = trackInfo.sampleRate;
-            bool isDSD = trackInfo.isDSD;
-
-            if (sampleRate == 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                continue;
-            }
-
-            // Adjust samples per call based on format
-            // PCM: 2048 samples = ~46ms at 44.1kHz
-            // DSD: Rate-adaptive for consistent ~12ms chunks
-            size_t samplesPerCall;
-            if (isDSD) {
-                samplesPerCall = DirettaBuffer::calculateDsdSamplesPerCall(sampleRate);
-            } else {
-                samplesPerCall = 2048;
-            }
-
-            if (sampleRate != lastSampleRate || samplesPerCall != currentSamplesPerCall) {
-                currentSamplesPerCall = samplesPerCall;
-                lastSampleRate = sampleRate;
-                DEBUG_LOG("[Audio Thread] Format: " << sampleRate << "Hz "
-                          << (isDSD ? "DSD" : "PCM") << ", samples/call="
-                          << currentSamplesPerCall);
-            }
-
-            // Buffer-level flow control (MPD-style)
-            // Only throttle if DirettaSync is actively playing
-            // If not playing (after stop), bufferLevel stays 0 so we call process()
-            // which triggers the open/quick-resume path in the audio callback
-            float bufferLevel = 0.0f;
-            if (m_direttaSync && m_direttaSync->isPlaying()) {
-                bufferLevel = m_direttaSync->getBufferLevel();
-            }
-
-            if (bufferLevel > BUFFER_HIGH_THRESHOLD) {
-                // Buffer is healthy - throttle to avoid wasting CPU
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            } else {
-                // Buffer needs filling - process immediately
-                bool success = m_audioEngine->process(currentSamplesPerCall);
-
-                if (!success) {
-                    // No data available from decoder, brief pause
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                } else if (bufferLevel < BUFFER_LOW_THRESHOLD && bufferLevel > 0.0f) {
-                    // Buffer is getting low - process again immediately (catch up)
-                    m_audioEngine->process(currentSamplesPerCall);
-                }
-            }
-        } else {
+        if (state != AudioEngine::State::PLAYING) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            nextWake = Clock::now();  // Reset cadence on state change
             lastSampleRate = 0;
+            continue;
+        }
+
+        const auto& trackInfo = m_audioEngine->getCurrentTrackInfo();
+        uint32_t sampleRate = trackInfo.sampleRate;
+        bool isDSD = trackInfo.isDSD;
+
+        if (sampleRate == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        // Recalculate chunk and period only when format changes
+        if (sampleRate != lastSampleRate || isDSD != lastIsDSD) {
+            currentChunk = selectChunkSize(sampleRate, isDSD);
+
+            // Calculate period: time for one chunk at this sample rate
+            // For DSD, sampleRate is the bit rate (e.g., 2822400 for DSD64)
+            uint64_t periodUs;
+            if (isDSD) {
+                // DSD: samples are 1-bit, rate is bits/second
+                periodUs = (currentChunk * 1000000ULL) / sampleRate;
+            } else {
+                // PCM: samples are multi-bit frames
+                periodUs = (currentChunk * 1000000ULL) / sampleRate;
+            }
+            period = std::chrono::microseconds(periodUs);
+
+            lastSampleRate = sampleRate;
+            lastIsDSD = isDSD;
+            nextWake = Clock::now();  // Reset cadence on format change
+
+            DEBUG_LOG("[Audio Thread] Format: " << sampleRate << "Hz "
+                      << (isDSD ? "DSD" : "PCM")
+                      << ", chunk=" << currentChunk
+                      << ", period=" << period.count() << "µs");
+        }
+
+        // Process audio
+        m_audioEngine->process(currentChunk);
+
+        // Steady cadence: advance wake time by fixed period
+        nextWake += period;
+        auto now = Clock::now();
+
+        if (nextWake > now) {
+            // On schedule - sleep until next wake
+            std::this_thread::sleep_until(nextWake);
+        } else {
+            // Running late - reset cadence to avoid accumulating delay
+            nextWake = now;
         }
     }
 

@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-01-27 - Audio Timing Stability Improvements
+
+Inspired by optimization analysis from **leeeanh**.
+
+### Changes
+
+Three interconnected improvements to reduce timing variance in the audio pipeline:
+
+#### Part 1: Aligned AudioBuffer
+- 64-byte aligned allocation for AVX-512/cache line optimization
+- Grow-only reallocation to eliminate allocation churn in hot path
+- Added `ensureCapacity()` for pre-allocation
+
+#### Part 2: Timing Stability
+- Quantized PCM chunk sizes: 2048 (≤48kHz), 4096 (≤96kHz), 8192 (>96kHz)
+- Replaced buffer-level throttling with steady `sleep_until` cadence
+- Fixed ~46ms period for consistent timing regardless of decode variance
+
+#### Part 3: Prefill Alignment
+- Prefill targets aligned to whole-buffer boundaries (N × bytesPerBuffer)
+- Format-aware prefill: 200ms for compressed (FLAC/ALAC), 100ms for uncompressed (WAV/AIFF)
+- Accounts for 44.1kHz family remainder accumulator pattern
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `src/AudioEngine.h` | Added `m_capacity`, `ensureCapacity()`, `ALIGNMENT` constant |
+| `src/AudioEngine.cpp` | Grow-only `resize()`, `std::aligned_alloc()` allocation |
+| `src/DirettaSync.h` | Added prefill constants, `m_prefillTargetBuffers`, `calculateAlignedPrefill()` |
+| `src/DirettaSync.cpp` | Aligned prefill calculation, format-aware prefill targets |
+| `src/DirettaRenderer.h` | Added `selectChunkSize()` |
+| `src/DirettaRenderer.cpp` | Quantized chunks, `sleep_until` cadence |
+
+### Rationale
+
+In real-time audio, consistent timing matters more than fast timing. These changes minimize variance in:
+- Memory allocation patterns
+- Chunk sizes and processing time
+- Sleep durations and wake-up timing
+- Buffer fill level transitions
+
+---
+
 ## 2026-01-25 - Build Fix: x86-64-v2 Compilation (AVX2 Fallback)
 
 ### Problem

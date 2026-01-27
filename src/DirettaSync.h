@@ -192,6 +192,13 @@ namespace DirettaBuffer {
     constexpr size_t PCM_PREFILL_MS = 30;       // Was 50 - faster start
     constexpr size_t PCM_LOWRATE_PREFILL_MS = 100;
 
+    // Aligned prefill targets (for whole-buffer alignment)
+    // Compressed formats (FLAC, ALAC) have variable decode times - need more buffer
+    // Uncompressed formats (WAV, AIFF) have predictable timing - less buffer needed
+    constexpr size_t PREFILL_MS_COMPRESSED = 200;    // FLAC, ALAC
+    constexpr size_t PREFILL_MS_UNCOMPRESSED = 100;  // WAV, AIFF
+    constexpr size_t PREFILL_MS_DSD = 150;           // DSD (fixed)
+
     constexpr unsigned int DAC_STABILIZATION_MS = 100;
     constexpr unsigned int ONLINE_WAIT_MS = 2000;
     constexpr unsigned int FORMAT_SWITCH_DELAY_MS = 800;
@@ -455,8 +462,10 @@ private:
 
     void configureSinkPCM(int rate, int channels, int inputBits, int& acceptedBits);
     void configureSinkDSD(uint32_t dsdBitRate, int channels, const AudioFormat& format);
-    void configureRingPCM(int rate, int channels, int direttaBps, int inputBps);
+    void configureRingPCM(int rate, int channels, int direttaBps, int inputBps, bool isCompressed);
     void configureRingDSD(uint32_t byteRate, int channels);
+    size_t calculateAlignedPrefill(size_t bytesPerSecond, size_t bytesPerBuffer,
+                                   bool isDSD, bool isCompressed);
     void beginReconfigure();
     void endReconfigure();
 
@@ -583,7 +592,8 @@ private:
     uint32_t m_cachedFramesPerBufferRemainder{0};
 
     // Prefill and stabilization
-    size_t m_prefillTarget = 0;
+    size_t m_prefillTarget = 0;           // Prefill target in bytes
+    size_t m_prefillTargetBuffers = 0;    // Prefill target in whole buffer count
     std::atomic<bool> m_prefillComplete{false};
     std::atomic<bool> m_postOnlineDelayDone{false};
     std::atomic<int> m_silenceBuffersRemaining{0};

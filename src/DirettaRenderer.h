@@ -50,6 +50,9 @@ private:
     void upnpThreadFunc();
     void positionThreadFunc();
 
+    // Audio timing helpers
+    size_t selectChunkSize(uint32_t sampleRate, bool isDSD) const;
+
     // Helper to wait for audio callback completion
     void waitForCallbackComplete();
 

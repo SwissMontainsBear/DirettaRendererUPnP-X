@@ -48,6 +48,9 @@ struct TrackInfo {
 
 /**
  * @brief Audio buffer for streaming
+ *
+ * 64-byte aligned, grow-only allocation for optimal SIMD performance
+ * and reduced allocation churn in the audio hot path.
  */
 class AudioBuffer {
 public:
@@ -62,14 +65,34 @@ public:
     AudioBuffer(AudioBuffer&& other) noexcept;
     AudioBuffer& operator=(AudioBuffer&& other) noexcept;
 
+    /**
+     * @brief Set logical size, growing capacity if needed
+     *
+     * If size <= capacity, no allocation occurs (grow-only).
+     * If size > capacity, buffer is reallocated with 1.5x growth.
+     */
     void resize(size_t size);
+
+    /**
+     * @brief Pre-allocate capacity without changing logical size
+     *
+     * Use this to reserve space before a series of operations.
+     */
+    void ensureCapacity(size_t cap);
+
     size_t size() const { return m_size; }
+    size_t capacity() const { return m_capacity; }
     uint8_t* data() { return m_data; }
     const uint8_t* data() const { return m_data; }
 
 private:
+    static constexpr size_t ALIGNMENT = 64;  // AVX-512 / cache line
+
+    void growCapacity(size_t needed);
+
     uint8_t* m_data;
     size_t m_size;
+    size_t m_capacity;
 };
 
 /**
