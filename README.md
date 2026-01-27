@@ -352,6 +352,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 **SwissMontainsBear** ([@SwissMontainsBear](https://github.com/SwissMontainsBear))
 
+### Contributors
+
+**leeeanh** ([@leeeanh](https://github.com/leeeanh)) - Audio timing stability optimizations
+
 ### Third-Party Components
 
 - [Diretta Host SDK](https://www.diretta.link) - Proprietary (personal use only)
