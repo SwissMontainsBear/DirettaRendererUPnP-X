@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-01-31 - CPU Tuning Script Consolidation
+
+### Unified CPU Tuning Script
+
+Consolidated the CPU isolation and tuning scripts into a single comprehensive script `diretta-renderer-tuner-nosmt.sh` that implements three layers of optimization.
+
+**Layers:**
+
+| Layer | Mechanism | Purpose |
+|-------|-----------|---------|
+| 1 | `nosmt` kernel parameter | Disable SMT/Hyper-Threading (8 physical cores) |
+| 2 | `isolcpus=1-7` + systemd slice | Isolate CPUs 1-7 for audio, CPU 0 for housekeeping |
+| 3 | Thread distribution script | Spread threads across isolated cores via `taskset` |
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `apply` | Apply all configuration (requires reboot) |
+| `verify` | Check all three layers are working |
+| `distribute` | Manually redistribute threads |
+| `status` | Quick status check |
+| `revert` | Remove all configuration (requires reboot) |
+
+**Key fixes:**
+- Fixed `nosmt` kernel parameter not being applied correctly to GRUB
+- Fixed thread distribution using `mapfile` which failed on some systems
+- Thread distribution now uses simple `for` loop with `$(ps -T -o tid=)`
+- Added automatic thread distribution via `ExecStartPost` in systemd service override
+
+**Files created by script:**
+- `/etc/systemd/system/audio-isolated.slice` - CPU slice for audio
+- `/etc/systemd/system/diretta-renderer.service.d/cpu-tuning.conf` - Service override
+- `/usr/local/bin/distribute-diretta-threads.sh` - Thread distribution script
+- `/var/log/diretta-thread-distribution.log` - Distribution log
+
+**Removed intermediate scripts:**
+- `phase1-nosmt-only.sh`
+- `phase2-isolate-cpus.sh`
+- `phase3-distribute-threads.sh`
+- `cpu-tuning-diagnostic.sh`
+- `diretta-renderer-tuner.sh` (SMT-enabled version)
+- `diretta-renderer-tuner-v2.sh`
+
+**Documentation:** Updated `docs/CPU_TUNING_METHODOLOGY.md` with complete usage guide.
+
+**Files:** `diretta-renderer-tuner-nosmt.sh`, `docs/CPU_TUNING_METHODOLOGY.md`
+
+---
+
 ## 2026-01-27 - Audio Timing Stability Improvements
 
 Inspired by optimization analysis from **leeeanh**.
