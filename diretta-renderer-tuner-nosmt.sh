@@ -39,6 +39,22 @@ GRUB_FILE="/etc/default/grub"
 SYSTEMD_DIR="/etc/systemd/system"
 LOCAL_BIN="/usr/local/bin"
 
+# Detect GRUB config path for Fedora
+# Modern Fedora uses BLS (Boot Loader Specification) and always writes to /boot/grub2/grub.cfg
+# even on UEFI systems - the EFI grub.cfg is just a wrapper
+detect_grub_cfg() {
+    # Fedora always uses /boot/grub2/grub.cfg (both BIOS and UEFI with BLS)
+    if [[ -f /boot/grub2/grub.cfg ]]; then
+        echo "/boot/grub2/grub.cfg"
+    elif [[ -f /boot/grub/grub.cfg ]]; then
+        # Debian/Ubuntu style
+        echo "/boot/grub/grub.cfg"
+    else
+        echo "/boot/grub2/grub.cfg"
+    fi
+}
+GRUB_CFG=$(detect_grub_cfg)
+
 SERVICE_NAME="diretta-renderer.service"
 SLICE_NAME="audio-isolated.slice"
 DIST_SCRIPT="${LOCAL_BIN}/distribute-diretta-threads.sh"
@@ -76,6 +92,12 @@ do_apply() {
     echo "  SMT:          DISABLED (nosmt)"
     echo "  Housekeeping: CPU ${HOUSEKEEPING_CPU}"
     echo "  Audio:        CPUs ${AUDIO_CPUS} (isolated)"
+    if [[ -d /sys/firmware/efi ]]; then
+        echo "  Boot mode:    UEFI"
+    else
+        echo "  Boot mode:    BIOS/Legacy"
+    fi
+    echo "  GRUB config:  ${GRUB_CFG}"
     echo ""
 
     # Backup GRUB
@@ -99,9 +121,11 @@ do_apply() {
     sed -i -E 's/ ?nohz=[^ "]+//g' "$GRUB_FILE"
     sed -i -E 's/ ?rcu_nocbs=[^ "]+//g' "$GRUB_FILE"
     sed -i -E 's/ ?irqaffinity=[^ "]+//g' "$GRUB_FILE"
+    sed -i -E 's/ ?intel_pstate=[^ "]+//g' "$GRUB_FILE"
 
     # Build new parameters
-    local kernel_params="nosmt isolcpus=${AUDIO_CPUS} nohz=on nohz_full=${AUDIO_CPUS} rcu_nocbs=${AUDIO_CPUS} irqaffinity=${HOUSEKEEPING_CPU}"
+    # Note: nohz/nohz_full removed - causes latency spikes on RT kernels
+    local kernel_params="nosmt isolcpus=${AUDIO_CPUS} rcu_nocbs=${AUDIO_CPUS} irqaffinity=${HOUSEKEEPING_CPU}"
 
     # Add to GRUB_CMDLINE_LINUX
     if grep -qE '^GRUB_CMDLINE_LINUX=""' "$GRUB_FILE"; then
@@ -119,13 +143,14 @@ do_apply() {
 
     # Update GRUB
     echo "Updating GRUB bootloader..."
+    echo "  GRUB config: ${GRUB_CFG}"
     if command -v update-grub &> /dev/null; then
         update-grub
     elif command -v grub2-mkconfig &> /dev/null; then
-        grub2-mkconfig -o /boot/grub2/grub.cfg
+        grub2-mkconfig -o "${GRUB_CFG}"
     else
         echo "WARNING: Could not find grub update command"
-        echo "Run manually: grub2-mkconfig -o /boot/grub2/grub.cfg"
+        echo "Run manually: grub2-mkconfig -o ${GRUB_CFG}"
     fi
     echo ""
 
@@ -369,6 +394,21 @@ do_verify() {
     echo ""
 
     # -------------------------------------------------------------------------
+    # Fedora-specific checks
+    # -------------------------------------------------------------------------
+    echo "Fedora/RHEL Checks"
+    echo "------------------"
+
+    # Check tuned service (can conflict with CPU isolation)
+    if systemctl is-active --quiet tuned 2>/dev/null; then
+        echo "[WARN] tuned service is running - may override CPU settings"
+        echo "       Consider: sudo systemctl disable --now tuned"
+    else
+        echo "[OK] tuned service not running"
+    fi
+    echo ""
+
+    # -------------------------------------------------------------------------
     # Summary
     # -------------------------------------------------------------------------
     echo "═══════════════════════════════════════════════════════════════"
@@ -498,16 +538,18 @@ do_revert() {
     sed -i -E 's/ ?nohz=[^ "]+//g' "$GRUB_FILE"
     sed -i -E 's/ ?rcu_nocbs=[^ "]+//g' "$GRUB_FILE"
     sed -i -E 's/ ?irqaffinity=[^ "]+//g' "$GRUB_FILE"
+    sed -i -E 's/ ?intel_pstate=[^ "]+//g' "$GRUB_FILE"
     sed -i 's/  */ /g' "$GRUB_FILE"
 
     show_grub
     echo ""
 
     echo "Updating GRUB..."
+    echo "  GRUB config: ${GRUB_CFG}"
     if command -v update-grub &> /dev/null; then
         update-grub
     elif command -v grub2-mkconfig &> /dev/null; then
-        grub2-mkconfig -o /boot/grub2/grub.cfg
+        grub2-mkconfig -o "${GRUB_CFG}"
     fi
 
     echo "Removing systemd configurations..."
