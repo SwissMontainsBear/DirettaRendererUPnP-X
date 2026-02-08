@@ -7,6 +7,7 @@
  */
 
 #include "DirettaSync.h"
+#include "DirettaProbe.h"
 #include <stdexcept>
 #include <iomanip>
 #include <pthread.h>
@@ -375,6 +376,10 @@ void DirettaSync::logSinkCapabilities() {
 //=============================================================================
 
 bool DirettaSync::open(const AudioFormat& format) {
+
+    // Probe: session start with sample rate and DSD flag packed into payload
+    PROBE_EVENT(ProbeEventType::SESSION_START, 0, 0,
+                static_cast<uint64_t>(format.sampleRate) | (static_cast<uint64_t>(format.isDSD) << 31));
 
     std::cout << "[DirettaSync] ========== OPEN ==========" << std::endl;
     std::cout << "[DirettaSync] Format: " << format.sampleRate << "Hz/"
@@ -1186,6 +1191,10 @@ bool DirettaSync::startPlayback() {
 void DirettaSync::stopPlayback(bool immediate) {
     // Log accumulated underruns at session end
     uint32_t underruns = m_underrunCount.exchange(0, std::memory_order_relaxed);
+
+    // Probe: session end with underrun count
+    PROBE_EVENT(ProbeEventType::SESSION_END, 0, 0, underruns);
+
     if (underruns > 0) {
         std::cerr << "[DirettaSync] Session had " << underruns << " underrun(s)" << std::endl;
     }
@@ -1253,12 +1262,17 @@ void DirettaSync::sendPreTransitionSilence() {
 //=============================================================================
 
 size_t DirettaSync::sendAudio(const uint8_t* data, size_t numSamples) {
+    PROBE_BEGIN(_probeStart);
+
     if (m_draining.load(std::memory_order_acquire)) return 0;
     if (m_stopRequested.load(std::memory_order_acquire)) return 0;
     if (!is_online()) return 0;
 
     RingAccessGuard ringGuard(m_ringUsers, m_reconfiguring);
-    if (!ringGuard.active()) return 0;
+    if (!ringGuard.active()) {
+        PROBE_END(ProbeEventType::SEND_AUDIO_FULL, _probeStart, 0, 0, 0);
+        return 0;
+    }
 
     // Generation counter optimization: single atomic load vs 5-6 loads
     // Only reload format atomics when format has actually changed
@@ -1330,11 +1344,22 @@ size_t DirettaSync::sendAudio(const uint8_t* data, size_t numSamples) {
         formatLabel = "PCM";
     }
 
+    // Probe: record push result
+    if (written > 0) {
+        PROBE_END(ProbeEventType::SEND_AUDIO, _probeStart,
+                  m_ringBuffer.getAvailable(), m_ringBuffer.size(), written);
+    } else {
+        PROBE_END(ProbeEventType::SEND_AUDIO_FULL, _probeStart,
+                  m_ringBuffer.getAvailable(), m_ringBuffer.size(), totalBytes);
+    }
+
     // Check prefill completion
     if (written > 0) {
         if (!m_prefillComplete.load(std::memory_order_acquire)) {
             if (m_ringBuffer.getAvailable() >= m_prefillTarget) {
                 m_prefillComplete = true;
+                PROBE_EVENT(ProbeEventType::PREFILL_DONE,
+                            m_ringBuffer.getAvailable(), m_ringBuffer.size(), m_prefillTarget);
                 DIRETTA_LOG(formatLabel << " prefill complete: " << m_ringBuffer.getAvailable() << " bytes");
             }
         }
@@ -1366,6 +1391,8 @@ float DirettaSync::getBufferLevel() const {
 //=============================================================================
 
 bool DirettaSync::getNewStream(diretta_stream& baseStream) {
+    PROBE_BEGIN(_probeStart);
+
     // SDK 148 WORKAROUND: Do NOT use DIRETTA::Stream class methods!
     // After Stop→Play (track change), SDK 148's Stream objects are corrupted.
     // Any method call (resize, get_16, etc.) causes segfault.
@@ -1420,6 +1447,8 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     RingAccessGuard ringGuard(m_ringUsers, m_reconfiguring);
     if (!ringGuard.active()) {
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
+        PROBE_END_FLAGS(ProbeEventType::GET_STREAM_SILENCE,
+                        ProbeSilenceReason::RECONFIGURING, _probeStart, 0, 0, 0);
         m_workerActive = false;
         return true;
     }
@@ -1432,6 +1461,8 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     if (silenceRemaining > 0) {
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
         m_silenceBuffersRemaining.fetch_sub(1, std::memory_order_acq_rel);
+        PROBE_END_FLAGS(ProbeEventType::GET_STREAM_SILENCE,
+                        ProbeSilenceReason::SHUTDOWN, _probeStart, 0, currentRingSize, 0);
         m_workerActive = false;
         return true;
     }
@@ -1439,6 +1470,8 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     // Stop requested
     if (m_stopRequested.load(std::memory_order_acquire)) {
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
+        PROBE_END_FLAGS(ProbeEventType::GET_STREAM_SILENCE,
+                        ProbeSilenceReason::STOP_REQUESTED, _probeStart, 0, currentRingSize, 0);
         m_workerActive = false;
         return true;
     }
@@ -1446,6 +1479,8 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     // Prefill not complete
     if (!m_prefillComplete.load(std::memory_order_acquire)) {
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
+        PROBE_END_FLAGS(ProbeEventType::GET_STREAM_SILENCE,
+                        ProbeSilenceReason::PREFILL, _probeStart, 0, currentRingSize, 0);
         m_workerActive = false;
         return true;
     }
@@ -1488,6 +1523,8 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
             DIRETTA_LOG("Post-online stabilization complete (" << count << " buffers)");
         }
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
+        PROBE_END_FLAGS(ProbeEventType::GET_STREAM_SILENCE,
+                        ProbeSilenceReason::STABILIZATION, _probeStart, 0, currentRingSize, count);
         m_workerActive = false;
         return true;
     }
@@ -1507,12 +1544,18 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     if (avail < static_cast<size_t>(currentBytesPerBuffer)) {
         m_underrunCount.fetch_add(1, std::memory_order_relaxed);
         std::memset(dest, currentSilenceByte, currentBytesPerBuffer);
+        PROBE_END(ProbeEventType::GET_STREAM_UNDERRUN, _probeStart,
+                  avail, currentRingSize, currentBytesPerBuffer);
         m_workerActive = false;
         return true;
     }
 
     // Pop from ring buffer
     m_ringBuffer.pop(dest, currentBytesPerBuffer);
+
+    // Probe: normal pop - record after pop so duration includes the memcpy
+    PROBE_END(ProbeEventType::GET_STREAM, _probeStart,
+              avail - currentBytesPerBuffer, currentRingSize, currentBytesPerBuffer);
 
     // G1: Signal producer that space is now available
     // Use try_lock to avoid blocking the time-critical consumer thread

@@ -7,6 +7,7 @@
 
 #include "DirettaRenderer.h"
 #include "DirettaSync.h"
+#include "DirettaProbe.h"
 #include "UPnPDevice.hpp"
 #include "AudioEngine.h"
 #include <chrono>
@@ -221,6 +222,7 @@ bool DirettaRenderer::start() {
                                          currentSyncFormat.channels != format.channels ||
                                          currentSyncFormat.isDSD != format.isDSD);
                     if (formatChanged) {
+                        PROBE_EVENT(ProbeEventType::FORMAT_CHANGE, 0, 0, format.sampleRate);
                         std::cout << "[Callback] FORMAT CHANGE DETECTED!" << std::endl;
                         std::cout << "[Callback]   Old: " << currentSyncFormat.sampleRate << "Hz/"
                                   << currentSyncFormat.bitDepth << "bit "

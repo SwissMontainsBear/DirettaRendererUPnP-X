@@ -140,6 +140,13 @@ ifdef DSD_DIAG
     $(info DSD diagnostics: ENABLED)
 endif
 
+# Optional instrumentation probes (lightweight audio path measurement)
+# Usage: make PROBE=1
+ifdef PROBE
+    CXXFLAGS += -DDIRETTA_PROBE
+    $(info Instrumentation: ENABLED)
+endif
+
 DIRETTA_LIB_NAME = libDirettaHost_$(FULL_VARIANT)$(NOLOG_SUFFIX).a
 ACQUA_LIB_NAME   = libACQUA_$(FULL_VARIANT)$(NOLOG_SUFFIX).a
 
