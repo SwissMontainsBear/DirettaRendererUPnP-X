@@ -441,6 +441,7 @@ When modifying this codebase:
 | `docs/PCM_OPTIMIZATION_CHANGES.md` | Low-latency PCM optimizations, buffer tuning |
 | `docs/SIMD_OPTIMIZATION_CHANGES.md` | AVX2/AVX-512 SIMD, lock-free patterns |
 | `docs/FORK_CHANGES.md` | Detailed diff from original v1.2.1 |
+| `docs/PROBE_GUIDE.md` | DirettaProbe instrumentation: build, run, analyse |
 | `docs/plans/` | Design documents for each optimization |
 | `CHANGELOG.md` | Chronological change history |
 | `README.md` | User documentation |

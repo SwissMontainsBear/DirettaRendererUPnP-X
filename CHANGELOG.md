@@ -1,5 +1,68 @@
 # Changelog
 
+## 2026-02-08 - DirettaProbe Instrumentation Framework
+
+### DirettaProbe
+
+Lightweight, compile-time-togglable instrumentation for measuring audio path latency and jitter. When disabled (`make` without `PROBE=1`), all probe code compiles to zero overhead.
+
+**Architecture:** Timestamped events captured in the hot path via a lock-free SPSC ring buffer (131K entries, 4MB), drained to CSV by a background thread every 100ms. Events include nanosecond-resolution durations, ring buffer fill levels, and platform metadata.
+
+**Probe points (8 total):**
+
+| Probe | Location | What It Measures |
+|-------|----------|------------------|
+| `SEND_AUDIO` | `sendAudio()` | Producer push latency and bytes written |
+| `SEND_AUDIO_FULL` | `sendAudio()` | Ring full / guard failure events |
+| `GET_STREAM` | `getNewStream()` | Consumer pop latency (includes memcpy) |
+| `GET_STREAM_UNDERRUN` | `getNewStream()` | Buffer underrun events |
+| `GET_STREAM_SILENCE` | `getNewStream()` | Silence insertion (5 reason codes) |
+| `SESSION_START` | `open()` | Session open with sample rate + DSD flag |
+| `SESSION_END` | `stopPlayback()` | Session close with underrun count |
+| `FORMAT_CHANGE` | Audio callback | Format transition with new sample rate |
+| `PREFILL_DONE` | `sendAudio()` | Prefill target reached |
+
+**Analysis tool:** `tools/probe-analyze.py` (Python 3 stdlib only, no pip dependencies):
+- Single-run summary with text histograms, P50/P90/P99/P99.9/max statistics
+- Two-run comparison with delta percentages
+- JSON export for programmatic tracking
+- Event type filtering
+
+**Usage:**
+```bash
+make clean && make PROBE=1              # Build with probes
+sudo ./bin/DirettaRendererUPnP --target 1 --probe   # Run
+python3 tools/probe-analyze.py /tmp/diretta-probe-*.csv  # Analyse
+
+# Compare two runs
+python3 tools/probe-analyze.py --compare baseline.csv experiment.csv
+```
+
+**Overhead:** ~100-150ns per probe point. At 44.1kHz stereo / 1500 MTU, the SDK callback cycle is ~2620us. Probe overhead ratio: 0.05%.
+
+**New files:**
+- `src/DirettaProbe.h` - ProbeEvent struct (32 bytes), ProbeRing class, compile-time macros
+- `tools/probe-analyze.py` - Offline analysis script
+- `docs/PROBE_GUIDE.md` - Complete usage guide
+
+**Modified files:**
+- `Makefile` - Added `PROBE=1` flag (follows `NOLOG`/`DSD_DIAG` pattern)
+- `src/DirettaSync.cpp` - 8 probe hooks in `sendAudio()`, `getNewStream()`, `open()`, `stopPlayback()`
+- `src/DirettaRenderer.cpp` - 1 probe hook at format change detection
+- `src/main.cpp` - `--probe`/`--probe-file` CLI, drain thread, CSV writer with platform metadata, signal handler flush
+
+### Collaborative AI Methodology Document
+
+Added `docs/plans/2026-02-08-Collaborative-AI-Methodology.md` documenting the "propose-arbitrate-converge" interaction pattern between human and AI that led to DirettaProbe.
+
+Key additions to the methodology:
+- **Principle 0: Instrumentation First** - Measure before optimising
+- **Principle: Map the System Boundary** - Know what you control vs what's external
+- **Principle: Diminishing Returns** - Stop when the dominant variance source is outside your domain
+- **Updated analysis prompt template (v2)** - Starts with boundary mapping and measurement assessment
+
+---
+
 ## 2026-01-31 - CPU Tuning Script Consolidation
 
 ### Unified CPU Tuning Script
