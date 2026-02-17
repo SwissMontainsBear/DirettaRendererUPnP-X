@@ -4,7 +4,6 @@
  */
 
 #include "AudioEngine.h"
-#include "DirettaRingBuffer.h"  // For kBitReverseLUT
 #include <iostream>
 #include <thread>
 #include <cstring>
@@ -747,14 +746,9 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
             printf("\n");
         }
 
-        // Bit reversal for DFF (MSB) files - DSF is LSB, no reversal needed
-        if (m_trackInfo.codec.find("msbf") != std::string::npos) {
-            // Use shared LUT from DirettaRingBuffer (cache-friendly, single copy in memory)
-            const uint8_t* rev = DirettaRingBuffer::kBitReverseLUT;
-            for (size_t i = 0; i < totalBytes; i++) {
-                buffer.data()[i] = rev[buffer.data()[i]];
-            }
-        }
+        // NOTE: Bit reversal for DFF (MSB) files is handled by DirettaSync's
+        // DSD conversion modes (configureSinkDSD selects the correct mode).
+        // AudioEngine outputs raw DSD data without bit manipulation.
 
         return (totalBytes * 8) / m_trackInfo.channels;
     }

@@ -379,9 +379,10 @@ public:
      * @brief Send audio data (push model)
      * @param data Audio buffer
      * @param numSamples Number of samples (for PCM) or special encoding for DSD
-     * @return Bytes consumed
+     * @param dsdByteOffset Bytes already consumed from this DSD buffer (for progressive sends)
+     * @return Bytes consumed this call
      */
-    size_t sendAudio(const uint8_t* data, size_t numSamples);
+    size_t sendAudio(const uint8_t* data, size_t numSamples, size_t dsdByteOffset = 0);
 
     float getBufferLevel() const;
     const AudioFormat& getFormat() const { return m_currentFormat; }

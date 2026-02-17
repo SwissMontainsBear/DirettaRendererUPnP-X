@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-02-17 - DSD Data Path Bug Fixes
+
+Four bugs identified and fixed in the DSD audio path, primarily affecting DSD512 playback.
+
+### Bug 1 (Critical): R-channel pointer misalignment in ring buffer
+
+**Files:** `src/DirettaRingBuffer.h`
+
+When the ring buffer couldn't accept a full DSD chunk (backpressure), `pushDSDPlanarOptimized()` computed the R-channel pointer from the capped processing amount instead of the actual input layout. This caused L-channel data to be read as R-channel data, producing stereo phase glitches ("plocks") audible during quiet passages.
+
+**Fix:** Added `channelStride` parameter (computed from full `inputSize`) to all 4 DSD conversion functions (`Passthrough`, `BitReverse`, `ByteSwap`, `BitReverseSwap`). The R-channel offset is now always correct regardless of how much data is processed per call.
+
+### Bug 2 (High): DSD partial write data loss
+
+**Files:** `src/DirettaRenderer.cpp`, `src/DirettaSync.cpp`, `src/DirettaSync.h`, `src/DirettaRingBuffer.h`
+
+The DSD send loop only retried when `sent == 0`. Partial writes (`0 < sent < total`) exited the loop, silently dropping unprocessed data. The PCM path already had correct progressive sending.
+
+**Fix:** DSD send loop now tracks cumulative progress with `totalSent` and retries with a `dsdByteOffset` parameter passed through `sendAudio()` to `pushDSDPlanarOptimized()`. Retry count resets on progress, matching PCM behaviour.
+
+### Bug 3 (Medium): DFF double bit-reversal
+
+**Files:** `src/AudioEngine.cpp`
+
+`AudioEngine::readSamples()` applied bit reversal for DFF (MSB) files before passing data to DirettaSync. But `configureSinkDSD()` didn't know the data was already reversed and applied bit reversal again. Double reversal = wrong bit ordering for DFF files.
+
+**Fix:** Removed bit reversal from AudioEngine. DirettaSync's DSD conversion modes (`configureSinkDSD()`) already handle bit reversal correctly based on source/sink format negotiation.
+
+### Bug 4 (Low): Missing Bresenham accumulator for DSD 44.1k family
+
+**Files:** `src/DirettaSync.cpp`
+
+`configureRingDSD()` truncated the fractional bytes-per-ms for 44.1k family DSD rates (e.g., DSD512: 5644.8 → 5648 bytes/ms). Over time, the consumer overdrained by ~3,200 bytes/sec, causing slow ring buffer fill drift.
+
+**Fix:** Added Bresenham accumulator (same pattern as PCM). Base `bytesPerBuffer` is aligned down to DSD group boundary, with periodic +groupSize correction. For DSD512 44.1k: base=5640, correction=8, remainder=600/1000, average=5644.8 (exact).
+
+---
+
 ## 2026-02-08 - DirettaProbe Instrumentation Framework
 
 ### DirettaProbe

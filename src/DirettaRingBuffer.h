@@ -442,18 +442,30 @@ public:
      * Uses specialized conversion functions with no per-iteration branch checks.
      * Mode should be determined at track open and cached in DirettaSync.
      *
-     * @param data Planar DSD data
-     * @param inputSize Total input size in bytes
+     * @param data Planar DSD data [all L | all R]
+     * @param inputSize Total input size in bytes (full buffer, for channel stride)
      * @param numChannels Number of audio channels
      * @param mode Pre-selected conversion mode (eliminates runtime checks)
-     * @return Input bytes consumed
+     * @param consumed Bytes already consumed from previous partial writes (default 0)
+     * @return Bytes consumed this call
      */
     size_t pushDSDPlanarOptimized(const uint8_t* data, size_t inputSize,
-                                   int numChannels, DSDConversionMode mode) {
+                                   int numChannels, DSDConversionMode mode,
+                                   size_t consumed = 0) {
         if (size_ == 0) return 0;
         if (numChannels == 0) return 0;
 
-        size_t maxBytes = inputSize;
+        // Channel stride: fixed distance between channels in original planar layout
+        // Always inputSize/numChannels regardless of how much we process per call
+        size_t channelStride = inputSize / static_cast<size_t>(numChannels);
+        size_t consumedPerCh = consumed / static_cast<size_t>(numChannels);
+
+        // Advance past already-consumed data (for progressive sends)
+        const uint8_t* src = data + consumedPerCh;
+        size_t remainingPerCh = channelStride - consumedPerCh;
+        size_t remainingBytes = remainingPerCh * static_cast<size_t>(numChannels);
+
+        size_t maxBytes = remainingBytes;
         if (maxBytes > STAGING_SIZE) maxBytes = STAGING_SIZE;
         size_t free = getFreeSpace();
         if (maxBytes > free) maxBytes = free;
@@ -463,25 +475,24 @@ public:
         size_t usableInput = completeGroups * 4 * static_cast<size_t>(numChannels);
         if (usableInput == 0) return 0;
 
-        prefetch_audio_buffer(data, usableInput);
+        prefetch_audio_buffer(src, usableInput);
 
         size_t stagedBytes;
         switch (mode) {
             case DSDConversionMode::Passthrough:
-                stagedBytes = convertDSD_Passthrough(m_stagingDSD, data, usableInput, numChannels);
+                stagedBytes = convertDSD_Passthrough(m_stagingDSD, src, usableInput, numChannels, channelStride);
                 break;
             case DSDConversionMode::BitReverseOnly:
-                stagedBytes = convertDSD_BitReverse(m_stagingDSD, data, usableInput, numChannels);
+                stagedBytes = convertDSD_BitReverse(m_stagingDSD, src, usableInput, numChannels, channelStride);
                 break;
             case DSDConversionMode::ByteSwapOnly:
-                stagedBytes = convertDSD_ByteSwap(m_stagingDSD, data, usableInput, numChannels);
+                stagedBytes = convertDSD_ByteSwap(m_stagingDSD, src, usableInput, numChannels, channelStride);
                 break;
             case DSDConversionMode::BitReverseAndSwap:
-                stagedBytes = convertDSD_BitReverseSwap(m_stagingDSD, data, usableInput, numChannels);
+                stagedBytes = convertDSD_BitReverseSwap(m_stagingDSD, src, usableInput, numChannels, channelStride);
                 break;
             default:
-                // Fallback to passthrough if unknown mode
-                stagedBytes = convertDSD_Passthrough(m_stagingDSD, data, usableInput, numChannels);
+                stagedBytes = convertDSD_Passthrough(m_stagingDSD, src, usableInput, numChannels, channelStride);
                 break;
         }
 
@@ -714,14 +725,15 @@ public:
      * NO bit reversal, NO byte swap
      */
     size_t convertDSD_Passthrough(uint8_t* dst, const uint8_t* src,
-                                   size_t totalInputBytes, int numChannels) {
+                                   size_t totalInputBytes, int numChannels,
+                                   size_t channelStride) {
         size_t bytesPerChannel = totalInputBytes / static_cast<size_t>(numChannels);
         size_t outputBytes = 0;
 
 #if DIRETTA_HAS_AVX2
         if (numChannels == 2) {
             const uint8_t* srcL = src;
-            const uint8_t* srcR = src + bytesPerChannel;
+            const uint8_t* srcR = src + channelStride;
 
             size_t i = 0;
             for (; i + 32 <= bytesPerChannel; i += 32) {
@@ -762,7 +774,7 @@ public:
         // Scalar fallback for non-AVX2 or non-stereo
         for (size_t i = 0; i < bytesPerChannel; i += 4) {
             for (int ch = 0; ch < numChannels; ch++) {
-                size_t chOffset = static_cast<size_t>(ch) * bytesPerChannel;
+                size_t chOffset = static_cast<size_t>(ch) * channelStride;
                 dst[outputBytes++] = src[chOffset + i + 0];
                 dst[outputBytes++] = src[chOffset + i + 1];
                 dst[outputBytes++] = src[chOffset + i + 2];
@@ -777,14 +789,15 @@ public:
      * Used for DSF→MSB or DFF→LSB target conversions
      */
     size_t convertDSD_BitReverse(uint8_t* dst, const uint8_t* src,
-                                  size_t totalInputBytes, int numChannels) {
+                                  size_t totalInputBytes, int numChannels,
+                                  size_t channelStride) {
         size_t bytesPerChannel = totalInputBytes / static_cast<size_t>(numChannels);
         size_t outputBytes = 0;
 
 #if DIRETTA_HAS_AVX2
         if (numChannels == 2) {
             const uint8_t* srcL = src;
-            const uint8_t* srcR = src + bytesPerChannel;
+            const uint8_t* srcR = src + channelStride;
 
             size_t i = 0;
             for (; i + 32 <= bytesPerChannel; i += 32) {
@@ -828,7 +841,7 @@ public:
         // Scalar fallback with bit reversal (using class-scope LUT)
         for (size_t i = 0; i < bytesPerChannel; i += 4) {
             for (int ch = 0; ch < numChannels; ch++) {
-                size_t chOffset = static_cast<size_t>(ch) * bytesPerChannel;
+                size_t chOffset = static_cast<size_t>(ch) * channelStride;
                 dst[outputBytes++] = kBitReverseLUT[src[chOffset + i + 0]];
                 dst[outputBytes++] = kBitReverseLUT[src[chOffset + i + 1]];
                 dst[outputBytes++] = kBitReverseLUT[src[chOffset + i + 2]];
@@ -843,14 +856,15 @@ public:
      * Used for endianness conversion
      */
     size_t convertDSD_ByteSwap(uint8_t* dst, const uint8_t* src,
-                                size_t totalInputBytes, int numChannels) {
+                                size_t totalInputBytes, int numChannels,
+                                size_t channelStride) {
         size_t bytesPerChannel = totalInputBytes / static_cast<size_t>(numChannels);
         size_t outputBytes = 0;
 
 #if DIRETTA_HAS_AVX2
         if (numChannels == 2) {
             const uint8_t* srcL = src;
-            const uint8_t* srcR = src + bytesPerChannel;
+            const uint8_t* srcR = src + channelStride;
 
             static const __m256i byteswap_mask = _mm256_setr_epi8(
                 3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12,
@@ -899,7 +913,7 @@ public:
         // Scalar fallback with byte swap
         for (size_t i = 0; i < bytesPerChannel; i += 4) {
             for (int ch = 0; ch < numChannels; ch++) {
-                size_t chOffset = static_cast<size_t>(ch) * bytesPerChannel;
+                size_t chOffset = static_cast<size_t>(ch) * channelStride;
                 dst[outputBytes++] = src[chOffset + i + 3];
                 dst[outputBytes++] = src[chOffset + i + 2];
                 dst[outputBytes++] = src[chOffset + i + 1];
@@ -914,14 +928,15 @@ public:
      * Used when both bit reversal and endianness conversion are needed
      */
     size_t convertDSD_BitReverseSwap(uint8_t* dst, const uint8_t* src,
-                                      size_t totalInputBytes, int numChannels) {
+                                      size_t totalInputBytes, int numChannels,
+                                      size_t channelStride) {
         size_t bytesPerChannel = totalInputBytes / static_cast<size_t>(numChannels);
         size_t outputBytes = 0;
 
 #if DIRETTA_HAS_AVX2
         if (numChannels == 2) {
             const uint8_t* srcL = src;
-            const uint8_t* srcR = src + bytesPerChannel;
+            const uint8_t* srcR = src + channelStride;
 
             static const __m256i byteswap_mask = _mm256_setr_epi8(
                 3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12,
@@ -972,7 +987,7 @@ public:
         // Scalar fallback with bit reversal + byte swap (using class-scope LUT)
         for (size_t i = 0; i < bytesPerChannel; i += 4) {
             for (int ch = 0; ch < numChannels; ch++) {
-                size_t chOffset = static_cast<size_t>(ch) * bytesPerChannel;
+                size_t chOffset = static_cast<size_t>(ch) * channelStride;
                 dst[outputBytes++] = kBitReverseLUT[src[chOffset + i + 3]];
                 dst[outputBytes++] = kBitReverseLUT[src[chOffset + i + 2]];
                 dst[outputBytes++] = kBitReverseLUT[src[chOffset + i + 1]];

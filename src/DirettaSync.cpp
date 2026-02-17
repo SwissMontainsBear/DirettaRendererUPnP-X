@@ -1150,13 +1150,30 @@ void DirettaSync::configureRingDSD(uint32_t byteRate, int channels) {
     m_ringBuffer.resize(ringSize, 0x69);  // DSD silence
     ringSize = m_ringBuffer.size();
 
-    uint32_t inputBytesPerMs = (byteRate / 1000) * channels;
-    size_t bytesPerBuffer = inputBytesPerMs;
-    bytesPerBuffer = ((bytesPerBuffer + (4 * channels - 1)) / (4 * channels)) * (4 * channels);
+    // DSD Bresenham accumulator for 44.1k family rates (same pattern as PCM)
+    // True bytes/ms = (byteRate * channels) / 1000.0, but we need integer arithmetic.
+    // Align down to DSD group boundary (4 bytes * channels), then use Bresenham
+    // correction to compensate for the fractional remainder.
+    uint32_t groupSize = 4 * channels;
+    uint64_t totalBytesPerMs64 = (static_cast<uint64_t>(byteRate) * channels) / 1000;
+    uint32_t totalRemainder = static_cast<uint32_t>(
+        (static_cast<uint64_t>(byteRate) * channels) % 1000);
+    uint32_t totalBytesPerMs = static_cast<uint32_t>(totalBytesPerMs64);
+
+    // Align base DOWN to DSD group boundary
+    uint32_t alignedBase = (totalBytesPerMs / groupSize) * groupSize;
+    uint32_t alignmentLoss = totalBytesPerMs - alignedBase;
+
+    // Bresenham remainder: how often to add one extra groupSize correction
+    // deficit per 1000 callbacks = alignmentLoss * 1000 + totalRemainder
+    uint32_t deficit1000 = alignmentLoss * 1000 + totalRemainder;
+    uint32_t bresenhamRemainder = deficit1000 / groupSize;
+
+    size_t bytesPerBuffer = alignedBase;
     if (bytesPerBuffer < 64) bytesPerBuffer = 64;
     m_bytesPerBuffer.store(static_cast<int>(bytesPerBuffer), std::memory_order_release);
-    m_bytesPerFrame.store(0, std::memory_order_release);
-    m_framesPerBufferRemainder.store(0, std::memory_order_release);
+    m_bytesPerFrame.store(static_cast<int>(groupSize), std::memory_order_release);
+    m_framesPerBufferRemainder.store(bresenhamRemainder, std::memory_order_release);
     m_framesPerBufferAccumulator.store(0, std::memory_order_release);
 
     // Aligned prefill: calculate as whole-buffer count for clean transitions
@@ -1165,6 +1182,9 @@ void DirettaSync::configureRingDSD(uint32_t byteRate, int channels) {
     m_prefillComplete = false;
 
     DIRETTA_LOG("Ring DSD: byteRate=" << byteRate << " ch=" << channels
+                << " bpb=" << bytesPerBuffer
+                << (bresenhamRemainder > 0 ? " bresenham=" : "")
+                << (bresenhamRemainder > 0 ? std::to_string(bresenhamRemainder) + "/1000" : "")
                 << " buffer=" << ringSize << " prefill=" << m_prefillTargetBuffers
                 << " buffers (" << m_prefillTarget << " bytes)");
 }
@@ -1261,7 +1281,7 @@ void DirettaSync::sendPreTransitionSilence() {
 // Audio Data (Push Interface)
 //=============================================================================
 
-size_t DirettaSync::sendAudio(const uint8_t* data, size_t numSamples) {
+size_t DirettaSync::sendAudio(const uint8_t* data, size_t numSamples, size_t dsdByteOffset) {
     PROBE_BEGIN(_probeStart);
 
     if (m_draining.load(std::memory_order_acquire)) return 0;
@@ -1308,7 +1328,7 @@ size_t DirettaSync::sendAudio(const uint8_t* data, size_t numSamples) {
 
         // Use optimized path with cached conversion mode (no per-iteration branching)
         written = m_ringBuffer.pushDSDPlanarOptimized(
-            data, totalBytes, numChannels, m_cachedDsdConversionMode);
+            data, totalBytes, numChannels, m_cachedDsdConversionMode, dsdByteOffset);
         formatLabel = "DSD";
 
     } else if (pack24bit) {

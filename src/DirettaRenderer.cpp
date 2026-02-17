@@ -263,17 +263,21 @@ bool DirettaRenderer::start() {
 
                 // Send audio (DirettaSync handles all format conversions)
                 if (trackInfo.isDSD) {
-                    // DSD: Atomic send with event-based flow control (G1)
-                    // Uses condition variable instead of blocking 5ms sleep
-                    // Reduces jitter from ±2.5ms to ±50µs
+                    // DSD: Progressive send with event-based flow control
+                    // Handles partial writes correctly by tracking consumed bytes
+                    size_t totalBytes = (samples * channels) / 8;
+                    size_t totalSent = 0;
                     int retryCount = 0;
-                    const int maxRetries = 20;  // Reduced: each wait is ~500µs max
-                    size_t sent = 0;
+                    const int maxRetries = 20;
 
-                    while (sent == 0 && retryCount < maxRetries) {
-                        sent = m_direttaSync->sendAudio(buffer.data(), samples);
+                    while (totalSent < totalBytes && retryCount < maxRetries) {
+                        size_t sent = m_direttaSync->sendAudio(
+                            buffer.data(), samples, totalSent);
 
-                        if (sent == 0) {
+                        if (sent > 0) {
+                            totalSent += sent;
+                            retryCount = 0;  // Reset on progress
+                        } else {
                             // Event-based wait: wake on space available or 500µs timeout
                             std::unique_lock<std::mutex> lock(m_direttaSync->getFlowMutex());
                             m_direttaSync->waitForSpace(lock, std::chrono::microseconds(500));
@@ -281,8 +285,9 @@ bool DirettaRenderer::start() {
                         }
                     }
 
-                    if (sent == 0) {
-                        std::cerr << "[Callback] DSD timeout after " << retryCount << " retries" << std::endl;
+                    if (totalSent < totalBytes) {
+                        std::cerr << "[Callback] DSD timeout, sent " << totalSent
+                                  << "/" << totalBytes << " bytes" << std::endl;
                     }
                 } else {
                     // PCM: Incremental send with hybrid flow control
